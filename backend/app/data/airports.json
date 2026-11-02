@@ -1,0 +1,1527 @@
+[
+  {
+    "code": "SOU",
+    "name": "Southampton Airport",
+    "city": "Southampton",
+    "country": "GB",
+    "region": "EU",
+    "lat": 50.9503,
+    "lon": -1.3568,
+    "metro_code": "SOU",
+    "is_major_hub": false,
+    "nearby_codes": ["BOH"]
+  },
+  {
+    "code": "BOH",
+    "name": "Bournemouth Airport",
+    "city": "Bournemouth",
+    "country": "GB",
+    "region": "EU",
+    "lat": 50.78,
+    "lon": -1.8425,
+    "metro_code": "BOH",
+    "is_major_hub": false,
+    "nearby_codes": ["SOU"]
+  },
+  {
+    "code": "SFO",
+    "name": "San Francisco Intl",
+    "city": "San Francisco",
+    "country": "US",
+    "region": "NA",
+    "lat": 37.6213,
+    "lon": -122.379,
+    "metro_code": "SFO",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "OAK",
+      "SJC"
+    ]
+  },
+  {
+    "code": "OAK",
+    "name": "Oakland Intl",
+    "city": "San Francisco / Oakland",
+    "country": "US",
+    "region": "NA",
+    "lat": 37.7213,
+    "lon": -122.2208,
+    "metro_code": "SFO",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "SFO",
+      "SJC"
+    ]
+  },
+  {
+    "code": "SJC",
+    "name": "San Jose Mineta Intl",
+    "city": "San Jose / Bay Area",
+    "country": "US",
+    "region": "NA",
+    "lat": 37.3639,
+    "lon": -121.9289,
+    "metro_code": "SFO",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "SFO",
+      "OAK"
+    ]
+  },
+  {
+    "code": "LAX",
+    "name": "Los Angeles Intl",
+    "city": "Los Angeles",
+    "country": "US",
+    "region": "NA",
+    "lat": 33.9416,
+    "lon": -118.4085,
+    "metro_code": "LAX",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "BUR",
+      "SNA",
+      "ONT"
+    ]
+  },
+  {
+    "code": "BUR",
+    "name": "Hollywood Burbank",
+    "city": "Los Angeles / Burbank",
+    "country": "US",
+    "region": "NA",
+    "lat": 34.2007,
+    "lon": -118.3587,
+    "metro_code": "LAX",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LAX",
+      "SNA"
+    ]
+  },
+  {
+    "code": "SNA",
+    "name": "John Wayne Airport",
+    "city": "Orange County / LA",
+    "country": "US",
+    "region": "NA",
+    "lat": 33.6757,
+    "lon": -117.8678,
+    "metro_code": "LAX",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LAX",
+      "BUR",
+      "ONT"
+    ]
+  },
+  {
+    "code": "ONT",
+    "name": "Ontario International Airport",
+    "city": "Ontario / Los Angeles",
+    "country": "US",
+    "region": "NA",
+    "lat": 34.056,
+    "lon": -117.6012,
+    "metro_code": "LAX",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LAX",
+      "SNA",
+      "BUR"
+    ]
+  },
+  {
+    "code": "SEA",
+    "name": "Seattle-Tacoma Intl",
+    "city": "Seattle",
+    "country": "US",
+    "region": "NA",
+    "lat": 47.4502,
+    "lon": -122.3088,
+    "metro_code": "SEA",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "YVR"
+    ]
+  },
+  {
+    "code": "YVR",
+    "name": "Vancouver Intl",
+    "city": "Vancouver",
+    "country": "CA",
+    "region": "NA",
+    "lat": 49.1967,
+    "lon": -123.1815,
+    "metro_code": "YVR",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "SEA"
+    ]
+  },
+  {
+    "code": "ORD",
+    "name": "O'Hare Intl",
+    "city": "Chicago",
+    "country": "US",
+    "region": "NA",
+    "lat": 41.9742,
+    "lon": -87.9073,
+    "metro_code": "CHI",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "MDW"
+    ]
+  },
+  {
+    "code": "MDW",
+    "name": "Midway Intl",
+    "city": "Chicago",
+    "country": "US",
+    "region": "NA",
+    "lat": 41.7868,
+    "lon": -87.7522,
+    "metro_code": "CHI",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ORD"
+    ]
+  },
+  {
+    "code": "DFW",
+    "name": "Dallas/Fort Worth Intl",
+    "city": "Dallas",
+    "country": "US",
+    "region": "NA",
+    "lat": 32.8998,
+    "lon": -97.0403,
+    "metro_code": "DFW",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "DAL"
+    ]
+  },
+  {
+    "code": "JFK",
+    "name": "John F. Kennedy Intl",
+    "city": "New York",
+    "country": "US",
+    "region": "NA",
+    "lat": 40.6413,
+    "lon": -73.7781,
+    "metro_code": "NYC",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "EWR",
+      "LGA"
+    ]
+  },
+  {
+    "code": "EWR",
+    "name": "Newark Liberty Intl",
+    "city": "New York / Newark",
+    "country": "US",
+    "region": "NA",
+    "lat": 40.6895,
+    "lon": -74.1745,
+    "metro_code": "NYC",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "JFK",
+      "LGA"
+    ]
+  },
+  {
+    "code": "LGA",
+    "name": "LaGuardia",
+    "city": "New York",
+    "country": "US",
+    "region": "NA",
+    "lat": 40.7769,
+    "lon": -73.874,
+    "metro_code": "NYC",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "JFK",
+      "EWR"
+    ]
+  },
+  {
+    "code": "BOS",
+    "name": "Logan Intl",
+    "city": "Boston",
+    "country": "US",
+    "region": "NA",
+    "lat": 42.3656,
+    "lon": -71.0096,
+    "metro_code": "BOS",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "IAD",
+    "name": "Washington Dulles Intl",
+    "city": "Washington D.C.",
+    "country": "US",
+    "region": "NA",
+    "lat": 38.9531,
+    "lon": -77.4565,
+    "metro_code": "WAS",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "DCA",
+      "BWI"
+    ]
+  },
+  {
+    "code": "DCA",
+    "name": "Reagan National",
+    "city": "Washington D.C.",
+    "country": "US",
+    "region": "NA",
+    "lat": 38.8512,
+    "lon": -77.0402,
+    "metro_code": "WAS",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "IAD",
+      "BWI"
+    ]
+  },
+  {
+    "code": "BWI",
+    "name": "Baltimore/Washington",
+    "city": "Washington / Baltimore",
+    "country": "US",
+    "region": "NA",
+    "lat": 39.1774,
+    "lon": -76.6684,
+    "metro_code": "WAS",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "IAD",
+      "DCA"
+    ]
+  },
+  {
+    "code": "MIA",
+    "name": "Miami Intl",
+    "city": "Miami",
+    "country": "US",
+    "region": "NA",
+    "lat": 25.7959,
+    "lon": -80.287,
+    "metro_code": "MIA",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "FLL"
+    ]
+  },
+  {
+    "code": "FLL",
+    "name": "Fort Lauderdale Intl",
+    "city": "Miami / Fort Lauderdale",
+    "country": "US",
+    "region": "NA",
+    "lat": 26.0742,
+    "lon": -80.1506,
+    "metro_code": "MIA",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MIA"
+    ]
+  },
+  {
+    "code": "YYZ",
+    "name": "Toronto Pearson Intl",
+    "city": "Toronto",
+    "country": "CA",
+    "region": "NA",
+    "lat": 43.6777,
+    "lon": -79.6248,
+    "metro_code": "YTO",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "LHR",
+    "name": "London Heathrow Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.47,
+    "lon": -0.4543,
+    "metro_code": "LON",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "LGW",
+      "STN",
+      "LTN",
+      "LCY",
+      "SEN"
+    ]
+  },
+  {
+    "code": "LGW",
+    "name": "London Gatwick Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.1537,
+    "lon": -0.1821,
+    "metro_code": "LON",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LHR",
+      "STN",
+      "LTN",
+      "LCY",
+      "SEN"
+    ]
+  },
+  {
+    "code": "STN",
+    "name": "London Stansted Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.886,
+    "lon": 0.2389,
+    "metro_code": "LON",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LHR",
+      "LGW",
+      "LTN",
+      "LCY",
+      "SEN"
+    ]
+  },
+  {
+    "code": "LTN",
+    "name": "London Luton Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.8747,
+    "lon": -0.3683,
+    "metro_code": "LON",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LHR",
+      "LGW",
+      "STN",
+      "LCY",
+      "SEN"
+    ]
+  },
+  {
+    "code": "LCY",
+    "name": "London City Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.5048,
+    "lon": 0.0495,
+    "metro_code": "LON",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LHR",
+      "LGW",
+      "STN",
+      "LTN",
+      "SEN"
+    ]
+  },
+  {
+    "code": "SEN",
+    "name": "London Southend Airport",
+    "city": "London",
+    "country": "GB",
+    "region": "EU",
+    "lat": 51.5714,
+    "lon": 0.6956,
+    "metro_code": "LON",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LHR",
+      "LGW",
+      "STN",
+      "LTN",
+      "LCY"
+    ]
+  },
+  {
+    "code": "MAN",
+    "name": "Manchester Airport",
+    "city": "Manchester",
+    "country": "GB",
+    "region": "EU",
+    "lat": 53.3537,
+    "lon": -2.275,
+    "metro_code": "MAN",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "EDI",
+      "LHR"
+    ]
+  },
+  {
+    "code": "EDI",
+    "name": "Edinburgh Airport",
+    "city": "Edinburgh",
+    "country": "GB",
+    "region": "EU",
+    "lat": 55.9508,
+    "lon": -3.3615,
+    "metro_code": "EDI",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MAN"
+    ]
+  },
+  {
+    "code": "CDG",
+    "name": "Charles de Gaulle Airport",
+    "city": "Paris",
+    "country": "FR",
+    "region": "EU",
+    "lat": 49.0097,
+    "lon": 2.5479,
+    "metro_code": "PAR",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "ORY",
+      "BVA"
+    ]
+  },
+  {
+    "code": "ORY",
+    "name": "Paris Orly Airport",
+    "city": "Paris",
+    "country": "FR",
+    "region": "EU",
+    "lat": 48.7262,
+    "lon": 2.3652,
+    "metro_code": "PAR",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "CDG",
+      "BVA"
+    ]
+  },
+  {
+    "code": "BVA",
+    "name": "Paris Beauvais Airport",
+    "city": "Paris",
+    "country": "FR",
+    "region": "EU",
+    "lat": 49.4544,
+    "lon": 2.1128,
+    "metro_code": "PAR",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "CDG",
+      "ORY"
+    ]
+  },
+  {
+    "code": "NCE",
+    "name": "Nice Cote d'Azur Airport",
+    "city": "Nice",
+    "country": "FR",
+    "region": "EU",
+    "lat": 43.6584,
+    "lon": 7.2159,
+    "metro_code": "NCE",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MXP"
+    ]
+  },
+  {
+    "code": "AMS",
+    "name": "Amsterdam Airport Schiphol",
+    "city": "Amsterdam",
+    "country": "NL",
+    "region": "EU",
+    "lat": 52.3105,
+    "lon": 4.7683,
+    "metro_code": "AMS",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "EIN",
+      "RTM"
+    ]
+  },
+  {
+    "code": "EIN",
+    "name": "Eindhoven Airport",
+    "city": "Eindhoven / Amsterdam",
+    "country": "NL",
+    "region": "EU",
+    "lat": 51.4501,
+    "lon": 5.3745,
+    "metro_code": "AMS",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "AMS",
+      "RTM"
+    ]
+  },
+  {
+    "code": "RTM",
+    "name": "Rotterdam The Hague Airport",
+    "city": "Rotterdam / Amsterdam",
+    "country": "NL",
+    "region": "EU",
+    "lat": 51.9569,
+    "lon": 4.4372,
+    "metro_code": "AMS",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "AMS",
+      "EIN"
+    ]
+  },
+  {
+    "code": "BRU",
+    "name": "Brussels Airport",
+    "city": "Brussels",
+    "country": "BE",
+    "region": "EU",
+    "lat": 50.901,
+    "lon": 4.4856,
+    "metro_code": "BRU",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "CRL"
+    ]
+  },
+  {
+    "code": "CRL",
+    "name": "Brussels South Charleroi Airport",
+    "city": "Brussels",
+    "country": "BE",
+    "region": "EU",
+    "lat": 50.4592,
+    "lon": 4.4538,
+    "metro_code": "BRU",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "BRU"
+    ]
+  },
+  {
+    "code": "FRA",
+    "name": "Frankfurt Airport",
+    "city": "Frankfurt",
+    "country": "DE",
+    "region": "EU",
+    "lat": 50.0379,
+    "lon": 8.5622,
+    "metro_code": "FRA",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "HHN"
+    ]
+  },
+  {
+    "code": "HHN",
+    "name": "Frankfurt-Hahn Airport",
+    "city": "Frankfurt",
+    "country": "DE",
+    "region": "EU",
+    "lat": 49.9487,
+    "lon": 7.2639,
+    "metro_code": "FRA",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "FRA"
+    ]
+  },
+  {
+    "code": "MUC",
+    "name": "Munich International Airport",
+    "city": "Munich",
+    "country": "DE",
+    "region": "EU",
+    "lat": 48.3537,
+    "lon": 11.775,
+    "metro_code": "MUC",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "BER",
+    "name": "Berlin Brandenburg Airport",
+    "city": "Berlin",
+    "country": "DE",
+    "region": "EU",
+    "lat": 52.3667,
+    "lon": 13.5033,
+    "metro_code": "BER",
+    "is_major_hub": false,
+    "nearby_codes": []
+  },
+  {
+    "code": "ZRH",
+    "name": "Zurich Airport",
+    "city": "Zurich",
+    "country": "CH",
+    "region": "EU",
+    "lat": 47.4582,
+    "lon": 8.5555,
+    "metro_code": "ZRH",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "BSL",
+      "GVA"
+    ]
+  },
+  {
+    "code": "BSL",
+    "name": "EuroAirport Basel Mulhouse Freiburg",
+    "city": "Basel / Zurich",
+    "country": "CH",
+    "region": "EU",
+    "lat": 47.59,
+    "lon": 7.5299,
+    "metro_code": "ZRH",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ZRH",
+      "GVA"
+    ]
+  },
+  {
+    "code": "GVA",
+    "name": "Geneva Airport",
+    "city": "Geneva",
+    "country": "CH",
+    "region": "EU",
+    "lat": 46.2381,
+    "lon": 6.1089,
+    "metro_code": "GVA",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ZRH",
+      "BSL"
+    ]
+  },
+  {
+    "code": "VIE",
+    "name": "Vienna International Airport",
+    "city": "Vienna",
+    "country": "AT",
+    "region": "EU",
+    "lat": 48.1103,
+    "lon": 16.5697,
+    "metro_code": "VIE",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "BTS"
+    ]
+  },
+  {
+    "code": "BTS",
+    "name": "Bratislava Airport",
+    "city": "Bratislava / Vienna",
+    "country": "SK",
+    "region": "EU",
+    "lat": 48.1702,
+    "lon": 17.2127,
+    "metro_code": "VIE",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "VIE"
+    ]
+  },
+  {
+    "code": "PRG",
+    "name": "Vaclav Havel Airport Prague",
+    "city": "Prague",
+    "country": "CZ",
+    "region": "EU",
+    "lat": 50.1008,
+    "lon": 14.26,
+    "metro_code": "PRG",
+    "is_major_hub": false,
+    "nearby_codes": []
+  },
+  {
+    "code": "BUD",
+    "name": "Budapest Ferenc Liszt Intl",
+    "city": "Budapest",
+    "country": "HU",
+    "region": "EU",
+    "lat": 47.4369,
+    "lon": 19.2556,
+    "metro_code": "BUD",
+    "is_major_hub": false,
+    "nearby_codes": []
+  },
+  {
+    "code": "FCO",
+    "name": "Leonardo da Vinci–Fiumicino Airport",
+    "city": "Rome",
+    "country": "IT",
+    "region": "EU",
+    "lat": 41.8003,
+    "lon": 12.2389,
+    "metro_code": "ROM",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "CIA",
+      "NAP",
+      "FLR"
+    ]
+  },
+  {
+    "code": "CIA",
+    "name": "Rome Ciampino Airport",
+    "city": "Rome",
+    "country": "IT",
+    "region": "EU",
+    "lat": 41.7994,
+    "lon": 12.5949,
+    "metro_code": "ROM",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "FCO",
+      "NAP"
+    ]
+  },
+  {
+    "code": "NAP",
+    "name": "Naples International Airport",
+    "city": "Naples",
+    "country": "IT",
+    "region": "EU",
+    "lat": 40.886,
+    "lon": 14.2908,
+    "metro_code": "NAP",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "FCO",
+      "CIA"
+    ]
+  },
+  {
+    "code": "FLR",
+    "name": "Florence Airport, Peretola",
+    "city": "Florence",
+    "country": "IT",
+    "region": "EU",
+    "lat": 43.81,
+    "lon": 11.2051,
+    "metro_code": "FLR",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "FCO",
+      "VCE",
+      "MXP"
+    ]
+  },
+  {
+    "code": "VCE",
+    "name": "Venice Marco Polo Airport",
+    "city": "Venice",
+    "country": "IT",
+    "region": "EU",
+    "lat": 45.5053,
+    "lon": 12.3519,
+    "metro_code": "VCE",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MXP",
+      "FLR"
+    ]
+  },
+  {
+    "code": "MXP",
+    "name": "Milan Malpensa Airport",
+    "city": "Milan",
+    "country": "IT",
+    "region": "EU",
+    "lat": 45.6301,
+    "lon": 8.7255,
+    "metro_code": "MIL",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "LIN",
+      "BGY"
+    ]
+  },
+  {
+    "code": "LIN",
+    "name": "Milan Linate Airport",
+    "city": "Milan",
+    "country": "IT",
+    "region": "EU",
+    "lat": 45.4451,
+    "lon": 9.2767,
+    "metro_code": "MIL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MXP",
+      "BGY"
+    ]
+  },
+  {
+    "code": "BGY",
+    "name": "Milan Bergamo Airport",
+    "city": "Milan",
+    "country": "IT",
+    "region": "EU",
+    "lat": 45.669,
+    "lon": 9.7042,
+    "metro_code": "MIL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MXP",
+      "LIN"
+    ]
+  },
+  {
+    "code": "MAD",
+    "name": "Adolfo Suarez Madrid–Barajas",
+    "city": "Madrid",
+    "country": "ES",
+    "region": "EU",
+    "lat": 40.4983,
+    "lon": -3.5676,
+    "metro_code": "MAD",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "BCN",
+    "name": "Josep Tarradellas Barcelona–El Prat",
+    "city": "Barcelona",
+    "country": "ES",
+    "region": "EU",
+    "lat": 41.2974,
+    "lon": 2.0833,
+    "metro_code": "BCN",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "GRO"
+    ]
+  },
+  {
+    "code": "GRO",
+    "name": "Girona–Costa Brava Airport",
+    "city": "Girona / Barcelona",
+    "country": "ES",
+    "region": "EU",
+    "lat": 41.901,
+    "lon": 2.7606,
+    "metro_code": "BCN",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "BCN"
+    ]
+  },
+  {
+    "code": "LIS",
+    "name": "Humberto Delgado Airport",
+    "city": "Lisbon",
+    "country": "PT",
+    "region": "EU",
+    "lat": 38.7756,
+    "lon": -9.1354,
+    "metro_code": "LIS",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "OPO"
+    ]
+  },
+  {
+    "code": "OPO",
+    "name": "Francisco Sa Carneiro Airport",
+    "city": "Porto",
+    "country": "PT",
+    "region": "EU",
+    "lat": 41.2481,
+    "lon": -8.6814,
+    "metro_code": "OPO",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "LIS"
+    ]
+  },
+  {
+    "code": "ATH",
+    "name": "Athens International Airport (Eleftherios Venizelos)",
+    "city": "Athens",
+    "country": "GR",
+    "region": "EU",
+    "lat": 37.9364,
+    "lon": 23.9445,
+    "metro_code": "ATH",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "JMK",
+      "JTR",
+      "SKG",
+      "HER"
+    ]
+  },
+  {
+    "code": "SKG",
+    "name": "Thessaloniki Airport Makedonia",
+    "city": "Thessaloniki",
+    "country": "GR",
+    "region": "EU",
+    "lat": 40.5197,
+    "lon": 22.9709,
+    "metro_code": "SKG",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ATH"
+    ]
+  },
+  {
+    "code": "JTR",
+    "name": "Santorini International Airport",
+    "city": "Santorini",
+    "country": "GR",
+    "region": "EU",
+    "lat": 36.3992,
+    "lon": 25.4793,
+    "metro_code": "JTR",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ATH",
+      "JMK",
+      "HER"
+    ]
+  },
+  {
+    "code": "JMK",
+    "name": "Mykonos Airport",
+    "city": "Mykonos",
+    "country": "GR",
+    "region": "EU",
+    "lat": 37.4351,
+    "lon": 25.3481,
+    "metro_code": "JMK",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ATH",
+      "JTR"
+    ]
+  },
+  {
+    "code": "HER",
+    "name": "Heraklion International Airport",
+    "city": "Heraklion / Crete",
+    "country": "GR",
+    "region": "EU",
+    "lat": 35.3397,
+    "lon": 25.1803,
+    "metro_code": "HER",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ATH",
+      "JTR"
+    ]
+  },
+  {
+    "code": "CPH",
+    "name": "Copenhagen Airport",
+    "city": "Copenhagen",
+    "country": "DK",
+    "region": "EU",
+    "lat": 55.618,
+    "lon": 12.6508,
+    "metro_code": "CPH",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "MMX"
+    ]
+  },
+  {
+    "code": "MMX",
+    "name": "Malmo Airport",
+    "city": "Malmo / Copenhagen",
+    "country": "SE",
+    "region": "EU",
+    "lat": 55.5363,
+    "lon": 13.3762,
+    "metro_code": "CPH",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "CPH"
+    ]
+  },
+  {
+    "code": "ARN",
+    "name": "Stockholm Arlanda",
+    "city": "Stockholm",
+    "country": "SE",
+    "region": "EU",
+    "lat": 59.6498,
+    "lon": 17.9238,
+    "metro_code": "STO",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "BMA",
+      "NYO"
+    ]
+  },
+  {
+    "code": "BMA",
+    "name": "Stockholm Bromma",
+    "city": "Stockholm",
+    "country": "SE",
+    "region": "EU",
+    "lat": 59.3544,
+    "lon": 17.9417,
+    "metro_code": "STO",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ARN"
+    ]
+  },
+  {
+    "code": "HEL",
+    "name": "Helsinki-Vantaa",
+    "city": "Helsinki",
+    "country": "FI",
+    "region": "EU",
+    "lat": 60.3172,
+    "lon": 24.9633,
+    "metro_code": "HEL",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "DUB",
+    "name": "Dublin Airport",
+    "city": "Dublin",
+    "country": "IE",
+    "region": "EU",
+    "lat": 53.4264,
+    "lon": -6.2499,
+    "metro_code": "DUB",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "IST",
+    "name": "Istanbul Airport",
+    "city": "Istanbul",
+    "country": "TR",
+    "region": "ME",
+    "lat": 41.2753,
+    "lon": 28.7519,
+    "metro_code": "IST",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "SAW"
+    ]
+  },
+  {
+    "code": "SAW",
+    "name": "Sabiha Gokcen",
+    "city": "Istanbul",
+    "country": "TR",
+    "region": "ME",
+    "lat": 40.8986,
+    "lon": 29.3092,
+    "metro_code": "IST",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "IST"
+    ]
+  },
+  {
+    "code": "DXB",
+    "name": "Dubai Intl",
+    "city": "Dubai",
+    "country": "AE",
+    "region": "ME",
+    "lat": 25.2532,
+    "lon": 55.3657,
+    "metro_code": "DXB",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "AUH",
+      "SHJ"
+    ]
+  },
+  {
+    "code": "SHJ",
+    "name": "Sharjah Intl",
+    "city": "Sharjah / Dubai",
+    "country": "AE",
+    "region": "ME",
+    "lat": 25.3286,
+    "lon": 55.5172,
+    "metro_code": "DXB",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "DXB",
+      "AUH"
+    ]
+  },
+  {
+    "code": "AUH",
+    "name": "Zayed Intl",
+    "city": "Abu Dhabi",
+    "country": "AE",
+    "region": "ME",
+    "lat": 24.433,
+    "lon": 54.6511,
+    "metro_code": "DXB",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "DXB",
+      "SHJ"
+    ]
+  },
+  {
+    "code": "DOH",
+    "name": "Hamad Intl",
+    "city": "Doha",
+    "country": "QA",
+    "region": "ME",
+    "lat": 25.2731,
+    "lon": 51.6081,
+    "metro_code": "DOH",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "HND",
+    "name": "Tokyo Haneda",
+    "city": "Tokyo",
+    "country": "JP",
+    "region": "ASIA",
+    "lat": 35.5494,
+    "lon": 139.7798,
+    "metro_code": "TYO",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "NRT"
+    ]
+  },
+  {
+    "code": "NRT",
+    "name": "Tokyo Narita",
+    "city": "Tokyo",
+    "country": "JP",
+    "region": "ASIA",
+    "lat": 35.772,
+    "lon": 140.3929,
+    "metro_code": "TYO",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "HND"
+    ]
+  },
+  {
+    "code": "KIX",
+    "name": "Kansai Intl",
+    "city": "Osaka / Kyoto",
+    "country": "JP",
+    "region": "ASIA",
+    "lat": 34.432,
+    "lon": 135.2304,
+    "metro_code": "OSA",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "ITM",
+      "UKB"
+    ]
+  },
+  {
+    "code": "ITM",
+    "name": "Osaka Itami",
+    "city": "Osaka / Kyoto",
+    "country": "JP",
+    "region": "ASIA",
+    "lat": 34.7855,
+    "lon": 135.4382,
+    "metro_code": "OSA",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "KIX",
+      "UKB"
+    ]
+  },
+  {
+    "code": "UKB",
+    "name": "Kobe Airport",
+    "city": "Kobe / Osaka",
+    "country": "JP",
+    "region": "ASIA",
+    "lat": 34.6328,
+    "lon": 135.2239,
+    "metro_code": "OSA",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "KIX",
+      "ITM"
+    ]
+  },
+  {
+    "code": "ICN",
+    "name": "Incheon Intl",
+    "city": "Seoul",
+    "country": "KR",
+    "region": "ASIA",
+    "lat": 37.4602,
+    "lon": 126.4407,
+    "metro_code": "SEL",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "GMP"
+    ]
+  },
+  {
+    "code": "GMP",
+    "name": "Gimpo Intl",
+    "city": "Seoul",
+    "country": "KR",
+    "region": "ASIA",
+    "lat": 37.5583,
+    "lon": 126.7906,
+    "metro_code": "SEL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "ICN"
+    ]
+  },
+  {
+    "code": "TPE",
+    "name": "Taoyuan Intl",
+    "city": "Taipei",
+    "country": "TW",
+    "region": "ASIA",
+    "lat": 25.0797,
+    "lon": 121.2342,
+    "metro_code": "TPE",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "TSA"
+    ]
+  },
+  {
+    "code": "TSA",
+    "name": "Taipei Songshan",
+    "city": "Taipei",
+    "country": "TW",
+    "region": "ASIA",
+    "lat": 25.0697,
+    "lon": 121.5525,
+    "metro_code": "TPE",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "TPE"
+    ]
+  },
+  {
+    "code": "HKG",
+    "name": "Hong Kong Intl",
+    "city": "Hong Kong",
+    "country": "HK",
+    "region": "ASIA",
+    "lat": 22.308,
+    "lon": 113.9185,
+    "metro_code": "HKG",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "MFM",
+      "SZX"
+    ]
+  },
+  {
+    "code": "MFM",
+    "name": "Macau Intl",
+    "city": "Macau / Hong Kong",
+    "country": "MO",
+    "region": "ASIA",
+    "lat": 22.1496,
+    "lon": 113.5915,
+    "metro_code": "HKG",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "HKG"
+    ]
+  },
+  {
+    "code": "SIN",
+    "name": "Changi Airport",
+    "city": "Singapore",
+    "country": "SG",
+    "region": "ASIA",
+    "lat": 1.3644,
+    "lon": 103.9915,
+    "metro_code": "SIN",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "KUL",
+    "name": "Kuala Lumpur Intl",
+    "city": "Kuala Lumpur",
+    "country": "MY",
+    "region": "ASIA",
+    "lat": 2.7456,
+    "lon": 101.7072,
+    "metro_code": "KUL",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "SZB"
+    ]
+  },
+  {
+    "code": "SZB",
+    "name": "Sultan Abdul Aziz Shah",
+    "city": "Kuala Lumpur",
+    "country": "MY",
+    "region": "ASIA",
+    "lat": 3.1306,
+    "lon": 101.5493,
+    "metro_code": "KUL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "KUL"
+    ]
+  },
+  {
+    "code": "BKK",
+    "name": "Suvarnabhumi",
+    "city": "Bangkok",
+    "country": "TH",
+    "region": "ASIA",
+    "lat": 13.69,
+    "lon": 100.7501,
+    "metro_code": "BKK",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "DMK"
+    ]
+  },
+  {
+    "code": "DMK",
+    "name": "Don Mueang Intl",
+    "city": "Bangkok",
+    "country": "TH",
+    "region": "ASIA",
+    "lat": 13.9126,
+    "lon": 100.6068,
+    "metro_code": "BKK",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "BKK"
+    ]
+  },
+  {
+    "code": "MNL",
+    "name": "Ninoy Aquino Intl",
+    "city": "Manila",
+    "country": "PH",
+    "region": "ASIA",
+    "lat": 14.5086,
+    "lon": 121.0194,
+    "metro_code": "MNL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "CRK"
+    ]
+  },
+  {
+    "code": "CRK",
+    "name": "Clark Intl",
+    "city": "Clark / Manila",
+    "country": "PH",
+    "region": "ASIA",
+    "lat": 15.186,
+    "lon": 120.56,
+    "metro_code": "MNL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MNL"
+    ]
+  },
+  {
+    "code": "DEL",
+    "name": "Indira Gandhi Intl",
+    "city": "New Delhi",
+    "country": "IN",
+    "region": "ASIA",
+    "lat": 28.5562,
+    "lon": 77.1,
+    "metro_code": "DEL",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "BOM",
+    "name": "Chhatrapati Shivaji",
+    "city": "Mumbai",
+    "country": "IN",
+    "region": "ASIA",
+    "lat": 19.0896,
+    "lon": 72.8656,
+    "metro_code": "BOM",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "SYD",
+    "name": "Sydney Kingsford Smith",
+    "city": "Sydney",
+    "country": "AU",
+    "region": "OC",
+    "lat": -33.9399,
+    "lon": 151.1753,
+    "metro_code": "SYD",
+    "is_major_hub": true,
+    "nearby_codes": []
+  },
+  {
+    "code": "MEL",
+    "name": "Melbourne Airport",
+    "city": "Melbourne",
+    "country": "AU",
+    "region": "OC",
+    "lat": -37.669,
+    "lon": 144.841,
+    "metro_code": "MEL",
+    "is_major_hub": true,
+    "nearby_codes": [
+      "AVV"
+    ]
+  },
+  {
+    "code": "AVV",
+    "name": "Avalon Airport",
+    "city": "Melbourne",
+    "country": "AU",
+    "region": "OC",
+    "lat": -38.0394,
+    "lon": 144.4694,
+    "metro_code": "MEL",
+    "is_major_hub": false,
+    "nearby_codes": [
+      "MEL"
+    ]
+  },
+  {
+    "code": "AKL",
+    "name": "Auckland Airport",
+    "city": "Auckland",
+    "country": "NZ",
+    "region": "OC",
+    "lat": -37.0082,
+    "lon": 174.785,
+    "metro_code": "AKL",
+    "is_major_hub": true,
+    "nearby_codes": []
+  }
+]

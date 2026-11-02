@@ -54,7 +54,8 @@ flights/
 │       ├── models/
 │       │   └── schemas.py           # Pydantic v2 models for inputs, flights, tickets, results
 │       ├── data/
-│       │   └── airports.py          # Metro areas, nearby airport chips, hub corridors & coordinates
+│       │   ├── airports.json        # Editable airport records, coordinates & nearby alternatives
+│       │   └── airports.py          # Airport loading, metro areas, search & distance helpers
 │       ├── cache/
 │       │   └── sqlite_cache.py      # SQLite cache (leg_search_cache, granular_flights, ticket_quote_cache)
 │       ├── providers/
@@ -84,5 +85,6 @@ flights/
 
 ## Key Implementation Details
 
+- **Airport Directory:** Edit `backend/app/data/airports.json` to add or update airports. Each record contains `code` (unique IATA code), `name`, `city`, `country` (two-letter code), `region` (`NA`, `EU`, `ASIA`, `ME`, `OC`, or `SA`), `lat`, `lon`, `metro_code`, `is_major_hub`, and `nearby_codes` (an array of airport codes). Airports in the same metropolitan area share a `metro_code`; nearby alternatives may belong to different metros. Restart the server after editing the file. Display-specific country names, city distances, and metro groupings remain in `airports.py`.
 - **SQLite Caching (`backend/app/cache/sqlite_cache.py`):** Stores leg search results in `leg_search_cache`, individual flight legs in `granular_flights`, and multi-slice ticket quotes in `ticket_quote_cache` inside `flights_cache.db`.
 - **Client-Side Persistence (`backend/app/static/app.js`):** Automatically saves user state to the `faresplit_trip_state_v1` browser cookie and `localStorage` on every change.

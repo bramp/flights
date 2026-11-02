@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.app.data.airports import (
+    AIRPORTS,
     candidate_intermediate_hubs,
     estimate_nonstop_hours,
+    get_airport,
     haversine_km,
     same_metro_area,
     suggest_airports,
@@ -15,6 +19,34 @@ from backend.app.models.schemas import (
     ConcreteCabinClass,
 )
 from backend.app.solver.cabin import highest_cabin, resolve_leg_cabin
+
+
+@pytest.mark.parametrize(
+    ("code", "city", "nearby_code"),
+    [("SOU", "Southampton", "BOH"), ("BOH", "Bournemouth", "SOU")],
+)
+def test_south_coast_airports(code: str, city: str, nearby_code: str) -> None:
+    airport = get_airport(code.lower())
+    assert airport.city == city
+    assert airport.name == f"{city} Airport"
+    assert airport.country == "GB"
+    assert airport.region == "EU"
+    assert airport.metro_code == code
+    assert airport.is_major_hub is False
+    assert 50 < airport.lat < 52
+    assert -3 < airport.lon < -1
+    for query in (city, code):
+        suggestion = next(item for item in suggest_airports(query) if item["code"] == code)
+        assert any(item["code"] == nearby_code and not item["same_metro"] for item in suggestion["nearby"])
+
+
+def test_airport_registry_preserves_record_types() -> None:
+    assert len(AIRPORTS) >= 100
+    for code, airport in AIRPORTS.items():
+        assert airport.code == code
+        assert isinstance(airport.nearby_codes, tuple)
+        assert -90 <= airport.lat <= 90
+        assert -180 <= airport.lon <= 180
 
 
 def test_paris_nearby_airports_exclude_brussels() -> None:
