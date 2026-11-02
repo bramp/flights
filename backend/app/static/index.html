@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FareSplit — Multi-City Flight &amp; Ticket Partition Optimizer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-icon">✈️</span>
+        <div>
+          <h1>FareSplit <span class="badge-subtle">Multi-City &amp; Ticket Optimizer</span></h1>
+          <p class="subtitle">Compare 1 Multi-City Ticket vs. Open-Jaw + Regional Hops vs. Nested Round-Trips vs. Hub Splits</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="preset-group">
+          <label for="presetSelect" class="sr-only">Load Sample Trip</label>
+          <select id="presetSelect" class="input-select compact">
+            <option value="">Load Example Trip…</option>
+            <option value="europe_loop">SFO → London, Paris, Rome → SFO (2 Weeks)</option>
+            <option value="asia_circuit">SFO → Tokyo, Taipei, Bangkok → SFO (3 Weeks)</option>
+            <option value="global_hub">JFK → London, Istanbul, Singapore → JFK</option>
+          </select>
+        </div>
+
+        <div class="cache-pill" id="cachePill" title="Every flight found is cached locally in SQLite so tweaking inputs is instant.">
+          <span class="dot-live"></span>
+          <span id="cacheStatusText">Cache: 0 flights</span>
+          <button type="button" id="clearCacheBtn" class="btn-link" title="Clear local SQLite flight cache">Clear</button>
+        </div>
+
+        <div class="cookie-indicator" id="cookieIndicator" title="Your inputs are automatically saved in browser cookies &amp; localStorage.">
+          🍪 Saved
+        </div>
+        <button type="button" id="resetDefaultsBtn" class="btn-secondary btn-sm">Reset Form</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace-single">
+    <!-- COMPACT MATRIX TRIP BUILDER -->
+    <section class="card matrix-card">
+      <!-- Top Controls Strip: Trip Window, Ordering, Baggage, Auto Cabin Rule -->
+      <div class="toolbar-strip">
+        <div class="toolbar-group">
+          <label for="earliestDepartureInput">Trip Window</label>
+          <div class="inline-inputs">
+            <input type="date" id="earliestDepartureInput" class="input-date compact" title="Earliest trip departure" />
+            <span class="muted-sep">→</span>
+            <input type="date" id="latestReturnInput" class="input-date compact" title="Latest trip return" />
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <label for="orderingModeSelect">City Order</label>
+          <select id="orderingModeSelect" class="input-select compact">
+            <option value="flexible">Flexible (Respect 📌 Pins)</option>
+            <option value="fixed">Fixed Sequence</option>
+            <option value="auto_tsp">Auto-Order All (TSP)</option>
+          </select>
+        </div>
+
+        <div class="toolbar-group">
+          <label>Baggage (All Flights)</label>
+          <div class="inline-inputs">
+            <label class="pill-check" title="Include carry-on bag on all flights">
+              <input type="checkbox" id="includeCarryOnCheck" checked />
+              <span>🧳 Carry-On</span>
+            </label>
+            <select id="checkedBagsCountSelect" class="input-select compact" title="Number of checked bags (adds carrier bag fees on split/LCC tickets and increases self-transfer buffers)">
+              <option value="0">0 Checked Bags</option>
+              <option value="1">1 Checked Bag</option>
+              <option value="2">2 Checked Bags</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <label title="Used when a flight connector is set to Auto">✨ "Auto" Cabin Rule</label>
+          <div class="inline-inputs">
+            <select id="defaultCabinSelect" class="input-select compact" title="Short-haul cabin">
+              <option value="economy">Econ</option>
+              <option value="premium_economy">Prem Econ</option>
+              <option value="business">Business</option>
+            </select>
+            <span class="muted-sep">under</span>
+            <input
+              type="number"
+              id="longHaulThresholdInput"
+              class="input-number compact-num"
+              min="2"
+              max="16"
+              step="0.5"
+              value="6.5"
+              title="Hours threshold for long-haul cabin upgrade"
+            />
+            <span class="muted-sep">h, else</span>
+            <select id="longHaulCabinSelect" class="input-select compact" title="Long-haul cabin">
+              <option value="economy">Econ</option>
+              <option value="premium_economy">Prem Econ</option>
+              <option value="business" selected>Business</option>
+              <option value="first">First</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar-group toolbar-right">
+          <button type="button" id="toggleWeightsBtn" class="btn-outline btn-sm">
+            ⚙️ Weights &amp; Hub Rules
+          </button>
+          <button type="button" id="addStopBtn" class="btn-primary btn-sm">+ Add City Row</button>
+        </div>
+      </div>
+
+      <!-- Collapsible Advanced Weights Drawer -->
+      <div id="weightsDrawer" class="weights-drawer hidden">
+        <div class="sliders-grid">
+          <div class="slider-box">
+            <div class="slider-header">
+              <label for="valueOfTimeInput">Value of Your Time</label>
+              <span class="slider-val" id="valueOfTimeLabel">$35 / hr</span>
+            </div>
+            <input type="range" id="valueOfTimeInput" min="0" max="150" step="5" value="35" class="slider" />
+          </div>
+
+          <div class="slider-box">
+            <div class="slider-header">
+              <label for="protectedTransferInput">Protected Stop Penalty</label>
+              <span class="slider-val" id="protectedTransferLabel">$45 / stop</span>
+            </div>
+            <input type="range" id="protectedTransferInput" min="0" max="300" step="15" value="45" class="slider" />
+          </div>
+
+          <div class="slider-box">
+            <div class="slider-header">
+              <label for="selfTransferInput">Self-Transfer Split Penalty</label>
+              <span class="slider-val" id="selfTransferLabel">$140 / split</span>
+            </div>
+            <input type="range" id="selfTransferInput" min="0" max="500" step="20" value="140" class="slider" />
+          </div>
+
+          <div class="slider-box" style="display:flex; flex-direction:column; justify-content:center; gap:0.35rem;">
+            <label class="inline-check" style="margin:0">
+              <input type="checkbox" id="enableHubSplittingCheck" checked />
+              <span><strong>Allow Intermediate Hub Ticket Splitting</strong></span>
+            </label>
+            <label class="inline-check" style="margin:0">
+              <input type="checkbox" id="sameAsOriginToggle" checked />
+              <span>Return to same city as Origin</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Instructions / Legend Bar -->
+      <div class="matrix-legend">
+        <span>
+          <strong>How to use the grid:</strong> Each row is a stop. Drag or click cells on the date grid to mark the <strong>date range it's OK to be in that city</strong>. Between each row, pick the <strong>cabin class</strong> for that flight leg.
+        </span>
+        <div class="legend-items">
+          <span class="legend-swatch ok-window"></span><span>Allowed Date Window</span>
+          <span class="legend-swatch scheduled-stay"></span><span>Optimal Chosen Stay</span>
+        </div>
+      </div>
+
+      <!-- THE TIMELINE / HEATMAP GRID -->
+      <div class="timeline-wrapper">
+        <div id="timelineMatrix" class="timeline-matrix"></div>
+      </div>
+
+      <!-- Bottom Action Bar -->
+      <div class="action-bar">
+        <div class="action-left">
+          <label class="inline-check" style="margin:0">
+            <input type="checkbox" id="forceRefreshCheck" />
+            <span>Force refresh (bypass SQLite cache)</span>
+          </label>
+        </div>
+        <div class="action-right">
+          <span id="staleNoticeBadge" class="stale-notice hidden">
+            ⚠️ Inputs changed — click Optimize to refresh results
+          </span>
+          <button type="button" id="optimizeBtn" class="btn-optimize">
+            🔍 Optimize Flights &amp; Ticket Combinations
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS SECTION -->
+    <section id="resultsContainer" class="results-container"></section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

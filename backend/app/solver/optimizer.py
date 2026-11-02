@@ -1,0 +1,102 @@
+"""End-to-end multi-city optimization orchestrator and Pareto frontier extractor."""
+
+from __future__ import annotations
+
+from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.models.schemas import (
+    EvaluatedItinerary,
+    OptimizationResponse,
+    StrategyKind,
+    TripRequest,
+)
+from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
+from backend.app.solver.pareto import (
+    annotate_badges,
+    extract_pareto_frontier,
+    is_dominated,
+)
+from backend.app.solver.partitioner import evaluate_all_partitions_for_schedule
+from backend.app.solver.route_dag import generate_candidate_schedules
+
+__all__ = [
+    "annotate_badges",
+    "extract_pareto_frontier",
+    "is_dominated",
+    "optimize_trip",
+]
+
+
+def optimize_trip(
+    request: TripRequest,
+    raw_provider: FlightSearchProvider,
+    cache: FlightCache,
+) -> OptimizationResponse:
+    """Run schedule DAG generation, cached flight search, ticket partitioning, and Pareto ranking."""
+    cache.reset_session_counters()
+    cached_provider = CachedFlightProvider(
+        delegate=raw_provider,
+        cache=cache,
+        force_refresh=request.force_refresh,
+    )
+
+    warnings: list[str] = []
+    total_window_days = (request.latest_return - request.earliest_departure).days
+    min_req_nights = sum(s.min_nights for s in request.stops)
+    if total_window_days < min_req_nights:
+        warnings.append(
+            f"Trip window ({total_window_days} days) is shorter than sum of minimum nights ({min_req_nights} nights); "
+            "stay durations were proportionally compressed."
+        )
+
+    schedules = generate_candidate_schedules(request, max_schedules=10)
+    if any(s.schedule_id.startswith("sched-fallback") for s in schedules):
+        warnings.append(
+            "Individual stop date windows did not overlap cleanly with stay durations; "
+            "showing the closest feasible schedule within your trip window."
+        )
+
+    all_evaluated: list[EvaluatedItinerary] = []
+
+    for sched in schedules:
+        partitions = evaluate_all_partitions_for_schedule(sched, request, cached_provider)
+        all_evaluated.extend(partitions)
+
+    if not all_evaluated:
+        raise ValueError(
+            "No valid flight combinations found for the requested stops and dates "
+            "(ensure consecutive stops do not share the exact same single airport)."
+        )
+
+    all_evaluated.sort(key=lambda i: i.effective_score)
+    annotate_badges(all_evaluated)
+
+    pareto = extract_pareto_frontier(all_evaluated)
+
+    # Build a best-of-each-strategy comparison table so the user can directly compare:
+    # 1 Single Ticket vs Open-Jaw+One-Ways vs Nested Tickets vs All One-Ways vs Hub-Split
+    best_by_strategy: dict[StrategyKind, EvaluatedItinerary] = {}
+    for itin in all_evaluated:
+        if itin.strategy not in best_by_strategy:
+            best_by_strategy[itin.strategy] = itin
+
+    strategy_comparison = sorted(best_by_strategy.values(), key=lambda i: i.effective_score)
+
+    # Recompute cross-strategy baseline deltas on the comparison set
+    baseline_single = best_by_strategy.get(StrategyKind.SINGLE_TICKET)
+    baseline_ow = best_by_strategy.get(StrategyKind.ALL_ONE_WAYS)
+    for itin in all_evaluated:
+        if baseline_single:
+            itin.savings_vs_single_ticket_usd = round(baseline_single.total_price_usd - itin.total_price_usd, 2)
+        if baseline_ow:
+            itin.savings_vs_all_one_ways_usd = round(baseline_ow.total_price_usd - itin.total_price_usd, 2)
+
+    recommended = all_evaluated[0]
+    return OptimizationResponse(
+        recommended=recommended,
+        pareto_frontier=pareto[:8],
+        strategy_comparison=strategy_comparison,
+        schedules_evaluated=len(schedules),
+        ticket_partitions_evaluated=len(all_evaluated),
+        cache_stats=cache.get_stats(),
+        warnings=warnings,
+    )

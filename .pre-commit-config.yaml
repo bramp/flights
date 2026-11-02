@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (lint & import sort)
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format (code formatting)
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+      - id: js-syntax-check
+        name: node --check (frontend JS syntax)
+        entry: node --check
+        language: system
+        files: ^backend/app/static/.*\.js$
+
+      - id: pytest
+        name: pytest (unit & API test suite)
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
