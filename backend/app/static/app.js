@@ -12,6 +12,70 @@ const COOKIE_NAME = "faresplit_trip_state_v1";
 const STORAGE_KEY = "faresplit_trip_state_v1";
 
 const PRESETS = {
+  greece_london: {
+    origin_label: "San Francisco",
+    origin_airports: ["SFO"],
+    destination_label: "San Francisco",
+    destination_airports: ["SFO"],
+    same_as_origin: true,
+    earliest_departure: "2026-12-11",
+    latest_departure: "2026-12-12",
+    earliest_return: "2026-12-24",
+    latest_return: "2026-12-26",
+    return_leg_cabin: "auto",
+    ordering_mode: "flexible",
+    stops: [
+      {
+        id: "stop-ath",
+        label: "Athens",
+        airports: ["ATH"],
+        earliest_arrival: "2026-12-11",
+        latest_departure: "2026-12-19",
+        min_nights: 3,
+        max_nights: 4,
+        fixed_order: false,
+        outbound_cabin: "auto",
+      },
+      {
+        id: "stop-jtr",
+        label: "Santorini",
+        airports: ["JTR"],
+        earliest_arrival: "2026-12-11",
+        latest_departure: "2026-12-19",
+        min_nights: 3,
+        max_nights: 4,
+        fixed_order: false,
+        outbound_cabin: "auto",
+      },
+      {
+        id: "stop-lon-dec",
+        label: "London",
+        airports: ["LHR", "LGW"],
+        earliest_arrival: "2026-12-17",
+        latest_departure: "2026-12-26",
+        min_nights: 6,
+        max_nights: 7,
+        fixed_order: true,
+        outbound_cabin: "economy",
+      },
+    ],
+    baggage: {
+      include_carry_on: true,
+      checked_bags: 1,
+    },
+    cabin_policy: {
+      default_cabin: "economy",
+      long_haul_cabin: "business",
+      long_haul_threshold_hours: 6.5,
+    },
+    weights: {
+      value_of_time_per_hour: 35,
+      protected_transfer_penalty: 45,
+      self_transfer_penalty: 140,
+      separate_ticket_penalty: 20,
+      enable_hub_splitting: true,
+    },
+  },
   europe_loop: {
     origin_label: "San Francisco",
     origin_airports: ["SFO", "OAK", "SJC"],
@@ -207,7 +271,7 @@ const PRESETS = {
 };
 
 let airportCatalog = {};
-let state = loadPersistedState() || structuredClone(PRESETS.europe_loop);
+let state = loadPersistedState() || structuredClone(PRESETS.greece_london);
 let currentOptimizationResponse = null;
 let selectedItineraryId = null;
 let resultsStale = false;
@@ -1132,6 +1196,15 @@ function renderBuilder() {
   }
 
   // Toolbar inputs
+  const provSelect = document.getElementById("providerModeSelect");
+  if (provSelect) {
+    provSelect.value = state.provider_mode || "auto";
+  }
+  const maxApiInput = document.getElementById("maxApiCallsInput");
+  if (maxApiInput) {
+    maxApiInput.value = String(state.max_api_calls_per_run || 25);
+  }
+
   document.getElementById("earliestDepartureInput").value = state.earliest_departure;
   document.getElementById("latestReturnInput").value = state.latest_return;
   document.getElementById("orderingModeSelect").value = state.ordering_mode || "flexible";
@@ -1473,6 +1546,8 @@ async function runOptimization() {
     baggage: state.baggage,
     cabin_policy: state.cabin_policy,
     weights: state.weights,
+    provider_mode: state.provider_mode || "auto",
+    max_api_calls_per_run: Number(state.max_api_calls_per_run || 25),
     force_refresh: document.getElementById("forceRefreshCheck").checked,
   };
 
@@ -1509,7 +1584,14 @@ async function runOptimization() {
 function updateCacheStatusUI(stats) {
   if (!stats) return;
   const el = document.getElementById("cacheStatusText");
-  el.textContent = `Cache: ${stats.total_cached_flights_in_db} flights (${stats.cache_hits} hits / ${stats.cache_misses} fetched)`;
+  if (el) {
+    el.textContent = `Cache: ${stats.total_cached_flights_in_db} flights (${stats.cache_hits} hits / ${stats.cache_misses} fetched)`;
+  }
+  const serpEl = document.getElementById("serpQuotaText");
+  if (serpEl) {
+    const runDelta = stats.serpapi_calls_this_run ? ` (+${stats.serpapi_calls_this_run} run)` : "";
+    serpEl.textContent = `SerpApi: ${stats.total_serpapi_calls_logged || 0} / 250${runDelta}`;
+  }
 }
 
 function renderOptimizationResults(data) {
@@ -1565,6 +1647,7 @@ function renderOptimizationResults(data) {
           (l) => `
           <div class="ticket-leg-row">
             <div>
+              <span class="badge-subtle" style="margin-left:0.3rem" title="Data source provider">${escapeHtml(l.provider)}</span>
               <strong>${escapeHtml(l.origin)} → ${escapeHtml(l.destination)}</strong>
               <span>(${escapeHtml(l.departure_date)})</span>
               <span class="cabin-tag ${escapeHtml(l.cabin)}">${escapeHtml(formatCabinName(l.cabin))}</span>
@@ -1819,22 +1902,42 @@ async function initApp() {
     state.weights.enable_hub_splitting = e.target.checked;
     onStateMutated();
   });
+const provSelect = document.getElementById("providerModeSelect");
+  if (provSelect) {
+    provSelect.addEventListener("change", (e) => {
+      state.provider_mode = e.target.value;
+      onStateMutated();
+    });
+  }
+
+  const maxApiInput = document.getElementById("maxApiCallsInput");
+  if (maxApiInput) {
+    maxApiInput.addEventListener("change", (e) => {
+      const val = parseInt(e.target.value, 10);
+      if (!isNaN(val) && val >= 1) {
+        state.max_api_calls_per_run = Math.min(250, val);
+        onStateMutated();
+      }
+    });
+  }
 
   // Preset & Reset
   document.getElementById("presetSelect").addEventListener("change", (e) => {
     const key = e.target.value;
     if (key && PRESETS[key]) {
+      const prevMode = state.provider_mode || "auto";
       state = structuredClone(PRESETS[key]);
+      state.provider_mode = prevMode;
       onStateMutated();
-      runOptimization();
     }
     e.target.value = "";
   });
 
   document.getElementById("resetDefaultsBtn").addEventListener("click", () => {
-    state = structuredClone(PRESETS.europe_loop);
+    const prevMode = state.provider_mode || "auto";
+    state = structuredClone(PRESETS.greece_london);
+    state.provider_mode = prevMode;
     onStateMutated();
-    runOptimization();
   });
 
   document.getElementById("clearCacheBtn").addEventListener("click", async () => {
@@ -1848,7 +1951,15 @@ async function initApp() {
   });
 
   renderBuilder();
-  runOptimization();
+  try {
+    const statusResp = await fetch("/api/provider-status");
+    if (statusResp.ok) {
+      const statusData = await statusResp.json();
+      updateCacheStatusUI(statusData.cache_stats);
+    }
+  } catch (_err) {
+    // Ignore status fetch error on init
+  }
 }
 
 document.addEventListener("DOMContentLoaded", initApp);

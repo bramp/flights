@@ -25,3 +25,10 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: playwright-ux
+        name: Playwright (mocked-backend UX tests)
+        entry: npm run test:ux
+        language: system
+        pass_filenames: false
+        always_run: true

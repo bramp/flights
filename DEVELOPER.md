@@ -3,12 +3,15 @@
 ## Prerequisites
 - **Python:** 3.12+ (managed via [`uv`](https://docs.astral.sh/uv/))
 - **SQLite3:** Built into Python standard library (`sqlite3`)
+- **Node.js:** 20+ and npm for the Playwright UX tests
 
 ## Quick Start
 
 ### 1. Install Dependencies
 ```bash
 uv sync
+npm ci
+npx playwright install chromium
 ```
 
 ### 2. Run the Application Server
@@ -23,7 +26,22 @@ uv run ruff format .
 uv run ruff check --fix .
 node --check backend/app/static/app.js
 uv run pytest
+npm run test:ux
 ```
+
+The Playwright suite serves the real frontend on port **8765** and mocks every
+`/api/` request. It does not start the FastAPI backend, contact flight providers,
+or consume API quota. Keep port 8765 free when running it.
+
+Tests run in desktop and mobile Chromium, covering Optimize submissions and
+loading states, results and ticket details, strategy selection, stale results,
+HTTP/network errors and retry, trip editing, saved state, reset, and cache clearing.
+Uncaught browser errors and unexpected API requests fail the tests. Failed tests
+save screenshots and traces under `test-results/`.
+
+Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine,
+install the browser and OS dependencies with `npx playwright install --with-deps chromium`
+after `npm ci`.
 
 ### 4. Pre-Commit Hooks
 Pre-commit hooks are configured in `.pre-commit-config.yaml` and installed into `.git/hooks/pre-commit`:
@@ -36,6 +54,7 @@ Every commit automatically runs:
 2. `ruff format` (Python code formatting)
 3. `node --check` (Frontend JavaScript syntax validation)
 4. `pytest -q` (Unit & API test suite)
+5. `npm run test:ux` (Mocked-backend desktop & mobile browser tests)
 
 ---
 

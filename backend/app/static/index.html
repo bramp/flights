@@ -19,13 +19,28 @@
 
       <div class="topbar-actions">
         <div class="preset-group">
+          <label for="providerModeSelect" class="sr-only">Flight Data Provider</label>
+          <select id="providerModeSelect" class="input-select compact" title="Choose live flight data source vs offline simulator">
+            <option value="auto">⚡ Auto (Fast-Flights Free + SerpApi)</option>
+            <option value="fast_flights">🌐 Fast-Flights Only (Free Live Scraper)</option>
+            <option value="serpapi">🔑 SerpApi Only (Batched Quota-Saver)</option>
+            <option value="offline">🧪 Offline Simulator (0 Quota)</option>
+          </select>
+        </div>
+
+        <div class="preset-group">
           <label for="presetSelect" class="sr-only">Load Sample Trip</label>
           <select id="presetSelect" class="input-select compact">
             <option value="">Load Example Trip…</option>
+            <option value="greece_london">SFO → Athens &amp; Santorini → London → SFO (Dec 11–26)</option>
             <option value="europe_loop">SFO → London, Paris, Rome → SFO (2 Weeks)</option>
             <option value="asia_circuit">SFO → Tokyo, Taipei, Bangkok → SFO (3 Weeks)</option>
             <option value="global_hub">JFK → London, Istanbul, Singapore → JFK</option>
           </select>
+        </div>
+
+        <div class="cache-pill" id="serpQuotaPill" title="Total SerpApi calls logged in SQLite across sessions (out of 250/month free quota).">
+          <span id="serpQuotaText">SerpApi: 0 / 250</span>
         </div>
 
         <div class="cache-pill" id="cachePill" title="Every flight found is cached locally in SQLite so tweaking inputs is instant.">
@@ -153,6 +168,10 @@
               <input type="checkbox" id="sameAsOriginToggle" checked />
               <span>Return to same city as Origin</span>
             </label>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.4rem; font-size:0.76rem; color:#475569; margin-top:0.15rem;">
+              <label for="maxApiCallsInput">Max Live API Queries / Run:</label>
+              <input type="number" id="maxApiCallsInput" class="input-number compact-num" min="1" max="250" value="25" />
+            </div>
           </div>
         </div>
       </div>

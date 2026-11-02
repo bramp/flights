@@ -25,6 +25,8 @@ data/cache/
 # Node / Frontend (if applicable)
 node_modules/
 frontend/dist/
+playwright-report/
+test-results/
 
 # Environment & IDE
 .env

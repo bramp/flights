@@ -1,0 +1,11 @@
+{
+  "name": "faresplit-ui-tests",
+  "private": true,
+  "scripts": {
+    "test:ux": "playwright test",
+    "test:ux:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  }
+}
