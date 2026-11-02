@@ -71,6 +71,7 @@ def test_optimize_and_cache_endpoints() -> None:
             "separate_ticket_penalty": 20.0,
             "enable_hub_splitting": True,
         },
+        "provider_mode": "offline",
         "force_refresh": False,
     }
 

@@ -39,6 +39,13 @@ class StrategyKind(StrEnum):
     HUB_SPLIT = "hub_split"
 
 
+class ProviderMode(StrEnum):
+    AUTO = "auto"
+    FAST_FLIGHTS = "fast_flights"
+    SERPAPI = "serpapi"
+    OFFLINE = "offline"
+
+
 class BaggageConfig(BaseModel):
     include_carry_on: bool = True
     checked_bags: int = Field(default=0, ge=0, le=3)
@@ -131,6 +138,13 @@ class TripRequest(BaseModel):
     baggage: BaggageConfig = Field(default_factory=BaggageConfig)
     cabin_policy: CabinPolicy = Field(default_factory=CabinPolicy)
     weights: OptimizationWeights = Field(default_factory=OptimizationWeights)
+    provider_mode: ProviderMode = ProviderMode.AUTO
+    max_api_calls_per_run: int = Field(
+        default=25,
+        ge=1,
+        le=250,
+        description="Hard cap on external live flight queries made during a single optimization run.",
+    )
     force_refresh: bool = False
 
     @model_validator(mode="after")
@@ -245,6 +259,10 @@ class CacheStats(BaseModel):
     cache_misses: int = 0
     total_cached_flights_in_db: int = 0
     total_cached_quotes_in_db: int = 0
+    serpapi_calls_this_run: int = 0
+    fast_flights_calls_this_run: int = 0
+    total_serpapi_calls_logged: int = 0
+    active_provider: str = "auto"
 
 
 class OptimizationResponse(BaseModel):

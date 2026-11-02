@@ -6,10 +6,12 @@ from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.models.schemas import (
     EvaluatedItinerary,
     OptimizationResponse,
+    ProviderMode,
     StrategyKind,
     TripRequest,
 )
 from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
+from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.solver.pareto import (
     annotate_badges,
     extract_pareto_frontier,
@@ -33,6 +35,13 @@ def optimize_trip(
 ) -> OptimizationResponse:
     """Run schedule DAG generation, cached flight search, ticket partitioning, and Pareto ranking."""
     cache.reset_session_counters()
+    if isinstance(raw_provider, CompositeFlightProvider):
+        raw_provider.configure_for_run(
+            cache=cache,
+            mode=request.provider_mode,
+            max_api_calls=request.max_api_calls_per_run,
+        )
+
     cached_provider = CachedFlightProvider(
         delegate=raw_provider,
         cache=cache,
@@ -48,7 +57,8 @@ def optimize_trip(
             "stay durations were proportionally compressed."
         )
 
-    schedules = generate_candidate_schedules(request, max_schedules=10)
+    max_sched = 4 if request.provider_mode in (ProviderMode.SERPAPI, ProviderMode.FAST_FLIGHTS) else 8
+    schedules = generate_candidate_schedules(request, max_schedules=max_sched)
     if any(s.schedule_id.startswith("sched-fallback") for s in schedules):
         warnings.append(
             "Individual stop date windows did not overlap cleanly with stay durations; "
@@ -60,6 +70,9 @@ def optimize_trip(
     for sched in schedules:
         partitions = evaluate_all_partitions_for_schedule(sched, request, cached_provider)
         all_evaluated.extend(partitions)
+
+    if isinstance(raw_provider, CompositeFlightProvider) and raw_provider.warnings:
+        warnings.extend(raw_provider.warnings)
 
     if not all_evaluated:
         raise ValueError(

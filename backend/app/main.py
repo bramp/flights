@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +23,8 @@ from backend.app.models.schemas import CacheStats, OptimizationResponse, TripReq
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.solver.optimizer import optimize_trip
 
+load_dotenv()
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(
@@ -28,13 +32,28 @@ app = FastAPI(
     version="0.1.0",
 )
 
-flight_cache = FlightCache(db_path="flights_cache.db")
+flight_cache = FlightCache(
+    db_path="flights_cache.db",
+    ttl_seconds=int(float(os.environ.get("FLIGHT_CACHE_TTL_DAYS", "7")) * 86400),
+)
 flight_provider = CompositeFlightProvider()
 
 
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/provider-status")
+def provider_status() -> dict[str, object]:
+    load_dotenv()
+    has_serp = bool(os.environ.get("SERPAPI_KEY", "").strip())
+    stats = flight_cache.get_stats()
+    return {
+        "has_serpapi_key": has_serp,
+        "total_serpapi_calls_logged": stats.total_serpapi_calls_logged,
+        "cache_stats": stats,
+    }
 
 
 @app.get("/api/airports")

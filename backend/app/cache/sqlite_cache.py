@@ -23,15 +23,19 @@ class FlightCache:
         self.ttl_seconds = ttl_seconds
         self.session_hits = 0
         self.session_misses = 0
+        self.session_serpapi_calls = 0
+        self.session_fast_flights_calls = 0
+        self.active_provider = "auto"
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS leg_search_cache (
@@ -80,10 +84,40 @@ class FlightCache:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_usage (
+                    provider TEXT PRIMARY KEY,
+                    call_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
 
     def reset_session_counters(self) -> None:
         self.session_hits = 0
         self.session_misses = 0
+        self.session_serpapi_calls = 0
+        self.session_fast_flights_calls = 0
+
+    def record_provider_call(self, provider_name: str) -> None:
+        """Record an external live query in both session counters and persistent SQLite usage tracking."""
+        now = time.time()
+        if provider_name == "serpapi":
+            self.session_serpapi_calls += 1
+        elif provider_name == "fast_flights":
+            self.session_fast_flights_calls += 1
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_usage (provider, call_count, updated_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(provider) DO UPDATE SET
+                    call_count = call_count + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (provider_name, now),
+            )
 
     @staticmethod
     def make_leg_key(
@@ -234,9 +268,15 @@ class FlightCache:
             flights_count = conn.execute("SELECT COUNT(*) AS cnt FROM granular_flights").fetchone()["cnt"]
             leg_queries_count = conn.execute("SELECT COUNT(*) AS cnt FROM leg_search_cache").fetchone()["cnt"]
             ticket_quotes_count = conn.execute("SELECT COUNT(*) AS cnt FROM ticket_quote_cache").fetchone()["cnt"]
+            serp_row = conn.execute("SELECT call_count FROM provider_usage WHERE provider = 'serpapi'").fetchone()
+            total_serp = int(serp_row["call_count"]) if serp_row else 0
         return CacheStats(
             cache_hits=self.session_hits,
             cache_misses=self.session_misses,
             total_cached_flights_in_db=int(flights_count),
             total_cached_quotes_in_db=int(leg_queries_count) + int(ticket_quotes_count),
+            serpapi_calls_this_run=self.session_serpapi_calls,
+            fast_flights_calls_this_run=self.session_fast_flights_calls,
+            total_serpapi_calls_logged=total_serp,
+            active_provider=self.active_provider,
         )

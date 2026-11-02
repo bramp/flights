@@ -12,13 +12,27 @@ Make sure you have Python 3.12+ and [`uv`](https://docs.astral.sh/uv/) installed
 uv sync
 ```
 
-### 2. Start the App Server
+### 2. Configure Your `.env` File (Optional for SerpApi)
+Putting API keys in a local `.env` file (which is git-ignored via `.gitignore`) is best practice so secrets are never committed or leaked in shell history:
+```bash
+cp .env.example .env
+```
+Edit `.env` and add your key:
+```ini
+SERPAPI_KEY=your_serpapi_key_here
+# Optional: custom delay in seconds between uncached live requests
+# FLIGHT_SEARCH_DELAY_SECONDS=1.0
+```
+The server automatically loads `.env` via `python-dotenv` on startup and before each optimization run.
+
+### 3. Start the App Server
 ```bash
 uv run uvicorn backend.app.main:app --reload --port 8000
 ```
 
-### 3. Open the Web UI
+### 4. Open the Web UI
 Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser.
+*(Note: If you previously ran the app in demo mode, click **Clear** next to `Cache:` in the top bar once so old simulated flights are purged from `flights_cache.db`.)*
 
 ---
 
@@ -76,14 +90,27 @@ Click **🔍 Optimize Flights & Ticket Combinations** (or load one of the preset
 
 ---
 
-## Caching, Persistence & Live Google Flights Data
+## Live Flight Data Modes, Rate Limiting & Saving Your SerpApi Quota
 
-- **Browser Cookie & LocalStorage Persistence:** All of your stops, airport selections, date windows, cabin rules, baggage settings, and sliders are automatically saved in a browser cookie (`faresplit_trip_state_v1`) and `localStorage` on every change (`🍪 Saved`). Reloading the page restores your exact state.
-- **Two-Level SQLite Flight Cache (`flights_cache.db`):** Every flight leg and multi-slice ticket quote discovered is persisted locally in SQLite. Tweaking stay durations, cabin rules, or trade-off weights re-evaluates in milliseconds without re-querying flights. Use the **Clear** button in the top bar or check **Force refresh (bypass SQLite cache)** to fetch fresh quotes.
-- **Live Google Flights (Optional):** By default, the app works out-of-the-box offline using a deterministic airline/alliance pricing engine. To query live Google Flights via SerpApi, start the server with:
-  ```bash
-  SERPAPI_KEY="your_serpapi_key" uv run uvicorn backend.app.main:app --reload --port 8000
-  ```
+Use the **Provider Mode** dropdown in the top bar to control how flights are fetched:
+
+1. **⚡ Auto (`Fast-Flights Free + SerpApi`):**
+   - Queries **Fast-Flights** (direct, keyless Google Flights protobuf scraper) first with a `1.0s` proactive rate-limit delay between uncached requests—costing **0 SerpApi quota**.
+   - Falls back to **SerpApi** (using your `SERPAPI_KEY` from `.env`) if a scraper query fails.
+2. **🌐 Fast-Flights Only (`Free Live Scraper`):**
+   - Uses only the free `fast-flights` Google Flights scraper (`1.0s` rate-limit spacing) and never touches your SerpApi quota. Great for broad date-window and city-order exploration.
+3. **🔑 SerpApi Only (`Batched Quota-Saver`):**
+   - Queries the official SerpApi `google_flights` endpoint (`0.4s` rate-limit spacing).
+   - **Multi-Airport Comma Batching:** Automatically combines all selected metro airports for a stop (e.g., `departure_id="SFO,OAK,SJC"` and `arrival_id="LHR,LGW"`) into a **single API call** instead of 6 separate calls—saving ~80% of your 250/month quota.
+4. **🧪 Offline Simulator (`0 Quota`):**
+   - Uses the deterministic local airline/alliance fare engine for instant offline testing.
+
+### Built-In Quota & Cache Protections
+- **No Unsolicited Queries on Page Load:** Opening or refreshing the page loads your saved setup from cookies/localStorage without firing an optimization run until you click **🔍 Optimize Flights & Ticket Combinations**.
+- **Per-Run Live Query Cap (`Max Live API Queries / Run`):** Inside **⚙️ Weights & Hub Rules**, each run is capped at `25` uncached live queries by default so a single click can never exhaust your monthly quota.
+- **Persistent Quota & Flight Cache (`flights_cache.db`):**
+  - Every discovered flight leg and ticket quote is stored in SQLite. Once a leg is fetched, tweaking stay durations, cabin rules, baggage, or trade-off weights reuses the cached flight in `<2ms` with **0 network calls**.
+  - The top bar displays both **`SerpApi: X / 250`** (logged persistently in SQLite across sessions) and **`Cache: Y flights`**, and each flight in the ticket breakdown displays a badge (`fast_flights`, `serpapi`, or `pricing_engine`) showing its exact source.
 
 ---
 

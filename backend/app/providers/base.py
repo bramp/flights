@@ -31,6 +31,24 @@ class FlightSearchProvider(ABC):
     ) -> list[FlightLegOption]:
         """Return candidate flight leg options for (origin, destination, departure_date, cabin)."""
 
+    def search_leg_batch(
+        self,
+        origins: tuple[str, ...],
+        destinations: tuple[str, ...],
+        departure_date: date,
+        cabin: ConcreteCabinClass,
+    ) -> list[FlightLegOption]:
+        """Search across multiple allowed origin and destination airports for a leg.
+        Providers like SerpApi can override this to batch comma-separated airports into 1 query.
+        """
+        results: list[FlightLegOption] = []
+        for orig in origins:
+            for dest in destinations:
+                if orig.upper() == dest.upper():
+                    continue
+                results.extend(self.search_leg(orig, dest, departure_date, cabin))
+        return results
+
     def quote_multi_slice_ticket(
         self,
         legs: list[FlightLegOption],
@@ -90,7 +108,32 @@ class CachedFlightProvider(FlightSearchProvider):
             self.cache.session_misses += 1
 
         fresh = self.delegate.search_leg(origin, destination, departure_date, cabin)
-        self.cache.store_leg_options(origin, destination, departure_date, cabin, fresh)
+        if fresh:
+            self.cache.store_leg_options(origin, destination, departure_date, cabin, fresh)
+        return fresh
+
+    def search_leg_batch(
+        self,
+        origins: tuple[str, ...],
+        destinations: tuple[str, ...],
+        departure_date: date,
+        cabin: ConcreteCabinClass,
+    ) -> list[FlightLegOption]:
+        clean_origs = tuple(dict.fromkeys(o.strip().upper() for o in origins if o.strip()))
+        clean_dests = tuple(dict.fromkeys(d.strip().upper() for d in destinations if d.strip()))
+        if not clean_origs or not clean_dests:
+            return []
+
+        batch_orig_key = ",".join(clean_origs)
+        batch_dest_key = ",".join(clean_dests)
+        if not self.force_refresh:
+            cached = self.cache.get_leg_options(batch_orig_key, batch_dest_key, departure_date, cabin)
+            if cached is not None:
+                return cached
+
+        fresh = self.delegate.search_leg_batch(clean_origs, clean_dests, departure_date, cabin)
+        if fresh:
+            self.cache.store_leg_options(batch_orig_key, batch_dest_key, departure_date, cabin, fresh)
         return fresh
 
     def quote_multi_slice_ticket(

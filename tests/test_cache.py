@@ -40,8 +40,15 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert fare_1 == fare_2
     assert cache.get_stats().cache_hits == 2
 
-    # Clearing cache empties tables
+    # Provider usage logging persists across clear_all()
+    cache.record_provider_call("serpapi")
+    cache.record_provider_call("serpapi")
+    assert cache.get_stats().serpapi_calls_this_run == 2
+    assert cache.get_stats().total_serpapi_calls_logged == 2
+
+    # Clearing cache empties flight tables while preserving lifetime SerpApi quota count
     cache.clear_all()
     cleared_stats = cache.get_stats()
     assert cleared_stats.total_cached_flights_in_db == 0
     assert cleared_stats.total_cached_quotes_in_db == 0
+    assert cleared_stats.total_serpapi_calls_logged == 2

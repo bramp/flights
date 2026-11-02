@@ -36,16 +36,17 @@ def _fetch_all_airport_pair_options(
     provider: FlightSearchProvider,
     cabin_override: ConcreteCabinClass | None = None,
 ) -> list[FlightLegOption]:
-    """Query all allowed (origin_airport, destination_airport) pairs for a planned leg."""
-    options: list[FlightLegOption] = []
-    for orig in leg_spec.origin_airports:
-        for dest in leg_spec.destination_airports:
-            if orig == dest:
-                continue
-            cabin = cabin_override or resolve_leg_cabin(orig, dest, leg_spec.requested_cabin, request.cabin_policy)
-            fetched = provider.search_leg(orig, dest, leg_spec.departure_date, cabin)
-            options.extend(fetched)
-    return options
+    """Query allowed (origin_airport, destination_airport) pairs for a planned leg,
+    using batched search when supported by the provider.
+    """
+    origs = leg_spec.origin_airports
+    dests = leg_spec.destination_airports
+    if not origs or not dests:
+        return []
+    if len(origs) == 1 and len(dests) == 1 and origs[0].upper() == dests[0].upper():
+        return []
+    cabin = cabin_override or resolve_leg_cabin(origs[0], dests[0], leg_spec.requested_cabin, request.cabin_policy)
+    return provider.search_leg_batch(origs, dests, leg_spec.departure_date, cabin)
 
 
 def _leg_generalized_cost(

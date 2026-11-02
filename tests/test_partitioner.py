@@ -133,15 +133,18 @@ def test_google_flights_payload_parser() -> None:
     }
     parsed = CompositeFlightProvider.parse_google_flights_payload(
         data=sample_payload,
-        origin="SFO",
-        destination="LHR",
+        origin="SFO,OAK",
+        destination="LHR,LGW",
         departure_date=date(2026, 11, 10),
         cabin=ConcreteCabinClass.ECONOMY,
     )
     assert len(parsed) == 1
     opt = parsed[0]
+    assert opt.origin == "SFO"
+    assert opt.destination == "LHR"
     assert opt.airline == "BA"
     assert opt.alliance == "Oneworld"
     assert opt.one_way_base_fare_usd == 740.0
     assert opt.stops_count == 0
     assert opt.segments[0].flight_number == "BA286"
+    assert opt.provider == "serpapi"
