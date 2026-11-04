@@ -12,6 +12,7 @@ from backend.app.models.schemas import (
     CabinPolicy,
     CityStopSpec,
     ConcreteCabinClass,
+    StopsMode,
     StrategyKind,
     TripRequest,
 )
@@ -148,3 +149,73 @@ def test_google_flights_payload_parser() -> None:
     assert opt.stops_count == 0
     assert opt.segments[0].flight_number == "BA286"
     assert opt.provider == "serpapi"
+
+
+def test_greece_london_auto_stops_keeps_ath_jtr_direct_and_warns_when_relaxed(
+    tmp_path: Path,
+) -> None:
+    cache = FlightCache(db_path=tmp_path / "greece.db")
+    provider = RealisticPricingProvider()
+
+    req = TripRequest(
+        origin_label="San Francisco",
+        origin_airports=["SFO"],
+        destination_label="San Francisco",
+        destination_airports=["SFO"],
+        earliest_departure=date(2026, 12, 11),
+        latest_departure=date(2026, 12, 12),
+        earliest_return=date(2026, 12, 24),
+        latest_return=date(2026, 12, 26),
+        return_leg_cabin=CabinClass.AUTO,
+        return_leg_stops=StopsMode.AUTO,
+        ordering_mode="fixed",
+        stops=[
+            CityStopSpec(
+                id="stop-ath",
+                label="Athens",
+                airports=["ATH"],
+                earliest_arrival=date(2026, 12, 11),
+                latest_departure=date(2026, 12, 19),
+                min_nights=3,
+                max_nights=4,
+                fixed_order=True,
+                outbound_cabin=CabinClass.AUTO,
+                outbound_stops=StopsMode.AUTO,
+            ),
+            CityStopSpec(
+                id="stop-jtr",
+                label="Santorini",
+                airports=["JTR"],
+                earliest_arrival=date(2026, 12, 11),
+                latest_departure=date(2026, 12, 19),
+                min_nights=3,
+                max_nights=4,
+                fixed_order=True,
+                outbound_cabin=CabinClass.AUTO,
+                outbound_stops=StopsMode.AUTO,
+            ),
+            CityStopSpec(
+                id="stop-lon-dec",
+                label="London",
+                airports=["LHR", "LGW"],
+                earliest_arrival=date(2026, 12, 17),
+                latest_departure=date(2026, 12, 26),
+                min_nights=6,
+                max_nights=7,
+                fixed_order=True,
+                outbound_cabin=CabinClass.ECONOMY,
+                outbound_stops=StopsMode.AUTO,
+            ),
+        ],
+    )
+
+    resp = optimize_trip(req, raw_provider=provider, cache=cache)
+    rec = resp.recommended
+    ath_jtr_leg = next(leg for leg in rec.legs if leg.origin == "ATH" and leg.destination == "JTR")
+    assert ath_jtr_leg.stops_count == 0
+    assert all(leg.stops_count <= 1 for leg in rec.legs)
+
+    # Requesting strict Nonstop on SFO -> ATH (where only 1-stop exists) gracefully relaxes and warns
+    req.stops[0].outbound_stops = StopsMode.NONSTOP
+    resp_relaxed = optimize_trip(req, raw_provider=provider, cache=cache)
+    assert any("relaxed to 1 stop" in w for w in resp_relaxed.warnings)

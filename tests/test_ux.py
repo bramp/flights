@@ -22,6 +22,8 @@ def _find_free_port() -> int:
 
 @pytest.fixture(scope="module")
 def live_server_url() -> Generator[str, None, None]:
+    testing_environment = pytest.MonkeyPatch()
+    testing_environment.setenv("FARESPLIT_TESTING", "1")
     port = _find_free_port()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
@@ -39,6 +41,7 @@ def live_server_url() -> Generator[str, None, None]:
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=3.0)
+    testing_environment.undo()
 
 
 def test_ux_end_to_end_optimization_and_interactions(page: Page, live_server_url: str) -> None:
@@ -61,7 +64,7 @@ def test_ux_end_to_end_optimization_and_interactions(page: Page, live_server_url
     expect(page.locator("#timelineMatrix .matrix-row")).to_have_count(6)  # Header + START + 3 Stops + END
 
     # 2. Select "offline" provider mode so test uses deterministic mocked/offline backend with 0 external calls
-    page.select_option("#providerModeSelect", "offline")
+    page.check("#simulationToggle")
 
     # 3. Click Optimize and verify results render cleanly with no JS errors
     page.click("#optimizeBtn")
@@ -98,7 +101,8 @@ def test_ux_end_to_end_optimization_and_interactions(page: Page, live_server_url
 
     # 7. Reload page and verify state persisted in cookies / localStorage
     page.reload()
-    expect(page.locator("#providerModeSelect")).to_have_value("offline")
+    expect(page.locator("#simulationToggle")).to_be_checked()
+    expect(page.locator("#providerModeSelect")).to_be_disabled()
     assert page_errors == []
 
 

@@ -249,7 +249,8 @@ body {
   border-radius: 8px;
 }
 
-.weights-drawer.hidden {
+.weights-drawer.hidden,
+.inline-check.hidden {
   display: none;
 }
 
@@ -905,7 +906,8 @@ body {
   min-width: 175px;
 }
 
-.connector-cabin-pills {
+.connector-cabin-pills,
+.connector-stops-pills {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;

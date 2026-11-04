@@ -43,6 +43,25 @@ Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine
 install the browser and OS dependencies with `npx playwright install --with-deps chromium`
 after `npm ci`.
 
+### Test-Only Simulation
+
+Normal servers never generate simulated flights, even when live providers fail or
+reach their query limit. `provider_mode="offline"` requests are rejected unless
+the server explicitly has `FARESPLIT_TESTING=1`.
+
+```bash
+FARESPLIT_TESTING=1 uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8001
+```
+
+This reveals a **Simulated data (testing)** checkbox. Simulation is exclusive of
+live data and bypasses all flight and quote cache reads/writes. Do not enable this
+flag on a deployed server. Tests that need the real simulation engine opt in via
+scoped environment fixtures; mocked browser tests do not require the flag.
+
+Cache initialization removes old simulated entries and invalidates legacy ticket
+quotes lacking source metadata. Existing live flights and lifetime usage counters
+are retained.
+
 ### 4. Pre-Commit Hooks
 Pre-commit hooks are configured in `.pre-commit-config.yaml` and installed into `.git/hooks/pre-commit`:
 ```bash
@@ -80,7 +99,7 @@ flights/
 │       ├── providers/
 │       │   ├── base.py              # Abstract FlightSearchProvider + CachedFlightProvider wrapper
 │       │   ├── google_flights.py    # Live Google Flights / SerpApi parser & composite provider
-│       │   └── pricing_engine.py    # Deterministic GDS/LCC/Alliance fare model & offline fallback
+│       │   └── pricing_engine.py    # Deterministic test-only flight and fare simulation
 │       ├── solver/
 │       │   ├── cabin.py             # Per-leg and duration-threshold cabin class resolver
 │       │   ├── route_dag.py         # Date-window & flexible city-order schedule generator

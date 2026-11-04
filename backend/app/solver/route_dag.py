@@ -11,6 +11,7 @@ from backend.app.models.schemas import (
     CabinClass,
     CityStopSpec,
     ScheduledStopVisit,
+    StopsMode,
     TripRequest,
 )
 
@@ -24,6 +25,7 @@ class PlannedLegSpec:
     requested_cabin: CabinClass
     from_label: str
     to_label: str
+    requested_stops: StopsMode = StopsMode.AUTO
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,7 @@ def generate_candidate_schedules(
                             requested_cabin=stop.outbound_cabin,
                             from_label=from_label,
                             to_label=stop.label,
+                            requested_stops=stop.outbound_stops,
                         )
                     )
                     visits.append(
@@ -209,6 +212,7 @@ def generate_candidate_schedules(
                         requested_cabin=request.return_leg_cabin,
                         from_label=last_stop.label,
                         to_label=request.destination_label,
+                        requested_stops=request.return_leg_stops,
                     )
                 )
 
@@ -253,6 +257,7 @@ def generate_candidate_schedules(
                     requested_cabin=stop.outbound_cabin,
                     from_label=from_label,
                     to_label=stop.label,
+                    requested_stops=stop.outbound_stops,
                 )
             )
             visits.append(
@@ -278,6 +283,7 @@ def generate_candidate_schedules(
                 requested_cabin=request.return_leg_cabin,
                 from_label=last_stop.label,
                 to_label=request.destination_label,
+                requested_stops=request.return_leg_stops,
             )
         )
         route_km = sum(haversine_km(leg.origin_airports[0], leg.destination_airports[0]) for leg in legs)

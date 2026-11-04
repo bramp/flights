@@ -9,13 +9,13 @@ const cacheStats = {
   serpapi_calls_this_run: 1,
 };
 
-function optimizationResponse() {
+function optimizationResponse(provider = "mock") {
   const leg = {
     origin: "SFO",
     destination: "ATH",
     departure_date: "2026-12-11",
     cabin: "business",
-    provider: "mock",
+    provider,
     airline_name: "Test Airways",
     flight_numbers: ["TA123"],
     duration_hours: 12,
@@ -134,9 +134,12 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
 });
 
 test("Optimize submits edited inputs, shows loading and clears stale results", async ({ page }) => {
-  await page.locator("#providerModeSelect").selectOption("offline");
+  await page.locator("#providerModeSelect").selectOption("fast_flights");
   await page.locator("#checkedBagsCountSelect").selectOption("2");
   await page.locator("#includeCarryOnCheck").uncheck();
+  await page.locator("#shortHaulStopsSelect").selectOption("nonstop");
+  await page.locator("#longHaulStopsSelect").selectOption("one_stop");
+  await page.locator(".connector-stops-pills").nth(1).getByRole("button", { name: "Nonstop" }).click();
   await page.locator("#forceRefreshCheck").check();
   await expect(page.locator("#staleNoticeBadge")).toBeVisible();
   await expect(page.locator("#resultsContainer")).toHaveClass(/results-stale/);
@@ -155,10 +158,18 @@ test("Optimize submits edited inputs, shows loading and clears stale results", a
     expect(request.postDataJSON()).toMatchObject({
       origin_airports: ["SFO"],
       destination_airports: ["SFO"],
-      provider_mode: "offline",
+      provider_mode: "fast_flights",
       force_refresh: true,
       baggage: { include_carry_on: false, checked_bags: 2 },
-      stops: expect.arrayContaining([expect.objectContaining({ id: "stop-ath", airports: ["ATH"] })]),
+      stops_policy: {
+        short_haul_stops: "nonstop",
+        long_haul_stops: "one_stop",
+        nonstop_threshold_hours: 4.5,
+      },
+      stops: expect.arrayContaining([
+        expect.objectContaining({ id: "stop-ath", airports: ["ATH"], outbound_stops: "auto" }),
+        expect.objectContaining({ id: "stop-jtr", airports: ["JTR"], outbound_stops: "nonstop" }),
+      ]),
     });
     await expect(page.locator("#optimizeBtn")).toBeDisabled();
     await expect(page.locator("#optimizeBtn")).toContainText("Optimizing");
@@ -230,4 +241,51 @@ test("clearing the cache updates its status without losing results", async ({ pa
   await expect(page.locator("#cacheStatusText")).toHaveText("Cache: 0 flights (0 hits / 0 fetched)");
   await expect(page.locator("#serpQuotaText")).toHaveText("SerpApi: 7 / 250");
   await expect(page.locator(".itinerary-hero h2")).toHaveText("Single Multi-City Ticket");
+});
+
+test("simulation controls are unavailable outside testing", async ({ page }) => {
+  await expect(page.locator("#simulationControl")).toBeHidden();
+  await expect(page.locator('#providerModeSelect option[value="offline"]')).toHaveCount(0);
+});
+
+test("saved simulation settings cannot re-enable simulation outside testing", async ({ page }) => {
+  await page.locator("#providerModeSelect").selectOption("fast_flights");
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem("faresplit_trip_state_v1"));
+    saved.provider_mode = "offline";
+    localStorage.setItem("faresplit_trip_state_v1", JSON.stringify(saved));
+  });
+  await page.context().clearCookies();
+  await page.reload();
+  await expect(page.locator("#providerModeSelect")).toHaveValue("auto");
+  await expect(page.locator("#simulationToggle")).not.toBeChecked();
+  const requestPromise = page.waitForRequest("**/api/optimize");
+  await page.locator("#optimizeBtn").click();
+  expect((await requestPromise).postDataJSON().provider_mode).toBe("auto");
+  await expect(page.locator(".itinerary-hero")).toBeVisible();
+});
+
+test("testing-only toggle switches between simulation and live requests", async ({ page }) => {
+  await page.route("**/api/provider-status", (route) => route.fulfill({
+    json: { testing_mode: true, cache_stats: cacheStats },
+  }));
+  await page.route("**/api/optimize", (route) => route.fulfill({
+    json: optimizationResponse(route.request().postDataJSON().provider_mode === "offline" ? "pricing_engine" : "fast_flights"),
+  }));
+  await page.reload();
+  await expect(page.locator("#simulationControl")).toBeVisible();
+  await page.locator("#simulationToggle").check();
+  await expect(page.locator("#providerModeSelect")).toBeDisabled();
+  let requestPromise = page.waitForRequest("**/api/optimize");
+  await page.locator("#optimizeBtn").click();
+  expect((await requestPromise).postDataJSON().provider_mode).toBe("offline");
+  await expect(page.locator(".ticket-list")).toContainText("Simulated estimate");
+
+  await page.locator("#simulationToggle").uncheck();
+  await expect(page.locator("#providerModeSelect")).toBeEnabled();
+  requestPromise = page.waitForRequest("**/api/optimize");
+  await page.locator("#optimizeBtn").click();
+  expect((await requestPromise).postDataJSON().provider_mode).toBe("auto");
+  await expect(page.locator(".ticket-list")).toContainText("fast_flights");
+  await expect(page.locator(".ticket-list")).not.toContainText("Simulated estimate");
 });

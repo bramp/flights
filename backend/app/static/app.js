@@ -11,6 +11,12 @@
 const COOKIE_NAME = "faresplit_trip_state_v1";
 const STORAGE_KEY = "faresplit_trip_state_v1";
 
+const DEFAULT_STOPS_POLICY = {
+  short_haul_stops: "nonstop",
+  long_haul_stops: "one_stop",
+  nonstop_threshold_hours: 4.5,
+};
+
 const PRESETS = {
   greece_london: {
     origin_label: "San Francisco",
@@ -23,6 +29,7 @@ const PRESETS = {
     earliest_return: "2026-12-24",
     latest_return: "2026-12-26",
     return_leg_cabin: "auto",
+    return_leg_stops: "auto",
     ordering_mode: "flexible",
     stops: [
       {
@@ -35,6 +42,7 @@ const PRESETS = {
         max_nights: 4,
         fixed_order: false,
         outbound_cabin: "auto",
+        outbound_stops: "auto",
       },
       {
         id: "stop-jtr",
@@ -46,6 +54,7 @@ const PRESETS = {
         max_nights: 4,
         fixed_order: false,
         outbound_cabin: "auto",
+        outbound_stops: "auto",
       },
       {
         id: "stop-lon-dec",
@@ -57,6 +66,7 @@ const PRESETS = {
         max_nights: 7,
         fixed_order: true,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
     ],
     baggage: {
@@ -68,6 +78,7 @@ const PRESETS = {
       long_haul_cabin: "business",
       long_haul_threshold_hours: 6.5,
     },
+    stops_policy: { ...DEFAULT_STOPS_POLICY },
     weights: {
       value_of_time_per_hour: 35,
       protected_transfer_penalty: 45,
@@ -87,6 +98,7 @@ const PRESETS = {
     earliest_return: "2026-11-22",
     latest_return: "2026-11-25",
     return_leg_cabin: "auto",
+    return_leg_stops: "auto",
     ordering_mode: "flexible",
     stops: [
       {
@@ -99,6 +111,7 @@ const PRESETS = {
         max_nights: 5,
         fixed_order: true,
         outbound_cabin: "auto",
+        outbound_stops: "auto",
       },
       {
         id: "stop-par",
@@ -110,6 +123,7 @@ const PRESETS = {
         max_nights: 4,
         fixed_order: false,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
       {
         id: "stop-rom",
@@ -121,6 +135,7 @@ const PRESETS = {
         max_nights: 5,
         fixed_order: false,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
     ],
     baggage: {
@@ -132,6 +147,7 @@ const PRESETS = {
       long_haul_cabin: "business",
       long_haul_threshold_hours: 6.5,
     },
+    stops_policy: { ...DEFAULT_STOPS_POLICY },
     weights: {
       value_of_time_per_hour: 35,
       protected_transfer_penalty: 45,
@@ -151,6 +167,7 @@ const PRESETS = {
     earliest_return: "2026-11-28",
     latest_return: "2026-12-01",
     return_leg_cabin: "business",
+    return_leg_stops: "auto",
     ordering_mode: "flexible",
     stops: [
       {
@@ -163,6 +180,7 @@ const PRESETS = {
         max_nights: 6,
         fixed_order: false,
         outbound_cabin: "business",
+        outbound_stops: "auto",
       },
       {
         id: "stop-tpe",
@@ -174,6 +192,7 @@ const PRESETS = {
         max_nights: 5,
         fixed_order: false,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
       {
         id: "stop-bkk",
@@ -185,6 +204,7 @@ const PRESETS = {
         max_nights: 6,
         fixed_order: false,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
     ],
     baggage: {
@@ -196,6 +216,7 @@ const PRESETS = {
       long_haul_cabin: "business",
       long_haul_threshold_hours: 6.5,
     },
+    stops_policy: { ...DEFAULT_STOPS_POLICY },
     weights: {
       value_of_time_per_hour: 40,
       protected_transfer_penalty: 50,
@@ -215,6 +236,7 @@ const PRESETS = {
     earliest_return: "2026-11-30",
     latest_return: "2026-12-03",
     return_leg_cabin: "auto",
+    return_leg_stops: "auto",
     ordering_mode: "flexible",
     stops: [
       {
@@ -227,6 +249,7 @@ const PRESETS = {
         max_nights: 5,
         fixed_order: true,
         outbound_cabin: "auto",
+        outbound_stops: "auto",
       },
       {
         id: "stop-ist",
@@ -238,6 +261,7 @@ const PRESETS = {
         max_nights: 5,
         fixed_order: false,
         outbound_cabin: "economy",
+        outbound_stops: "auto",
       },
       {
         id: "stop-sin",
@@ -249,6 +273,7 @@ const PRESETS = {
         max_nights: 6,
         fixed_order: false,
         outbound_cabin: "business",
+        outbound_stops: "auto",
       },
     ],
     baggage: {
@@ -260,6 +285,7 @@ const PRESETS = {
       long_haul_cabin: "business",
       long_haul_threshold_hours: 7.0,
     },
+    stops_policy: { ...DEFAULT_STOPS_POLICY },
     weights: {
       value_of_time_per_hour: 45,
       protected_transfer_penalty: 50,
@@ -275,6 +301,7 @@ let state = loadPersistedState() || structuredClone(PRESETS.greece_london);
 let currentOptimizationResponse = null;
 let selectedItineraryId = null;
 let resultsStale = false;
+let testingMode = false;
 
 function escapeHtml(str) {
   return String(str ?? "")
@@ -307,6 +334,16 @@ function setResultsStale(isStale) {
 }
 
 function clampDatesToTripWindow() {
+  if (!state.stops_policy) {
+    state.stops_policy = { ...DEFAULT_STOPS_POLICY };
+  }
+  if (!state.return_leg_stops) {
+    state.return_leg_stops = "auto";
+  }
+  state.stops.forEach((s) => {
+    if (!s.outbound_stops) s.outbound_stops = "auto";
+  });
+
   const minIso = state.earliest_departure;
   const maxIso = state.latest_return;
   if (!minIso || !maxIso || maxIso <= minIso) return;
@@ -434,6 +471,35 @@ function formatCabinName(cabin) {
     first: "First",
   };
   return map[cabin] || cabin;
+}
+
+function formatStopsName(stops) {
+  const map = {
+    auto: "Auto",
+    nonstop: "Nonstop",
+    one_stop: "≤1 Stop",
+    any: "Any",
+  };
+  return map[stops] || stops;
+}
+
+function resolvePreviewStops(fromCode, toCode, requestedStops) {
+  const policy = state.stops_policy || DEFAULT_STOPS_POLICY;
+  if (requestedStops && requestedStops !== "auto") {
+    return { stops: requestedStops, autoReason: "Explicit override" };
+  }
+  const estHrs = estimateHoursBetween(fromCode, toCode);
+  const threshold = Number(policy.nonstop_threshold_hours || 4.5);
+  if (estHrs < threshold) {
+    return {
+      stops: policy.short_haul_stops || "nonstop",
+      autoReason: `Auto (~${estHrs.toFixed(1)}h < ${threshold}h → ${formatStopsName(policy.short_haul_stops || "nonstop")})`,
+    };
+  }
+  return {
+    stops: policy.long_haul_stops || "one_stop",
+    autoReason: `Auto (~${estHrs.toFixed(1)}h ≥ ${threshold}h → ${formatStopsName(policy.long_haul_stops || "one_stop")})`,
+  };
 }
 
 /**
@@ -1141,9 +1207,19 @@ window.addEventListener("mouseup", () => {
   saveStateToCookieAndStorage();
 });
 
-/* --- Render Compact Between-Row Cabin Selector (Full Width) --- */
-function createFlightConnectorRow({ legLabel, fromCode, toCode, isFlexibleTarget, currentCabin, onSelectCabin }) {
+/* --- Render Compact Between-Row Cabin & Stops Selector (Full Width) --- */
+function createFlightConnectorRow({
+  legLabel,
+  fromCode,
+  toCode,
+  isFlexibleTarget,
+  currentCabin,
+  onSelectCabin,
+  currentStops = "auto",
+  onSelectStops,
+}) {
   const resolved = resolvePreviewCabin(fromCode, toCode, currentCabin);
+  const resolvedStops = resolvePreviewStops(fromCode, toCode, currentStops);
   const row = document.createElement("div");
   row.className = "flight-connector-row";
 
@@ -1155,14 +1231,27 @@ function createFlightConnectorRow({ legLabel, fromCode, toCode, isFlexibleTarget
     { value: "first", label: "First" },
   ];
 
+  const stopsOptions = [
+    { value: "auto", label: "✨ Auto" },
+    { value: "nonstop", label: "Nonstop" },
+    { value: "one_stop", label: "≤1 Stop" },
+    { value: "any", label: "Any" },
+  ];
+
   const routeDisplay = isFlexibleTarget
     ? `✈️ ${escapeHtml(legLabel)}: <strong>→ ${escapeHtml(toCode)}</strong> <span style="font-weight:400; color:#64748b">(inbound leg)</span>`
     : `✈️ ${escapeHtml(legLabel)}: <strong>${escapeHtml(fromCode)} → ${escapeHtml(toCode)}</strong>`;
 
+  const autoNotes = [];
+  if (currentCabin === "auto") autoNotes.push(resolved.autoReason);
+  if (currentStops === "auto") autoNotes.push(resolvedStops.autoReason);
+
   row.innerHTML = `
     <span class="connector-route">${routeDisplay}</span>
     <div class="connector-cabin-pills"></div>
-    <span class="connector-resolved">${currentCabin === "auto" ? escapeHtml(resolved.autoReason) : ""}</span>
+    <span class="muted-sep" style="margin-left:0.25rem; font-weight:600">Stops:</span>
+    <div class="connector-stops-pills"></div>
+    <span class="connector-resolved">${escapeHtml(autoNotes.join(" · "))}</span>
   `;
 
   const pillsBox = row.querySelector(".connector-cabin-pills");
@@ -1183,11 +1272,35 @@ function createFlightConnectorRow({ legLabel, fromCode, toCode, isFlexibleTarget
     pillsBox.appendChild(btn);
   });
 
+  const stopsBox = row.querySelector(".connector-stops-pills");
+  stopsOptions.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const isDirectActive = currentStops === opt.value;
+    const isAutoResolved = currentStops === "auto" && resolvedStops.stops === opt.value;
+    const classes = ["cabin-pill-btn", "stops-pill-btn"];
+    if (isDirectActive) classes.push("active");
+    if (isAutoResolved) classes.push("auto-resolved");
+    btn.className = classes.join(" ");
+    btn.textContent = opt.label;
+    btn.title = isAutoResolved
+      ? `Chosen by Auto Stops rule (${resolvedStops.autoReason}). Click to lock ${opt.label}.`
+      : `Set maximum stops for ${fromCode} → ${toCode}`;
+    if (onSelectStops) {
+      btn.addEventListener("click", () => onSelectStops(opt.value));
+    }
+    stopsBox.appendChild(btn);
+  });
+
   return row;
 }
 
 /* --- Render Full Compact Timeline Matrix --- */
 function renderBuilder() {
+  if (!testingMode && state.provider_mode === "offline") {
+    state.provider_mode = "auto";
+    saveStateToCookieAndStorage();
+  }
   clampDatesToTripWindow();
 
   if (state.same_as_origin) {
@@ -1198,8 +1311,10 @@ function renderBuilder() {
   // Toolbar inputs
   const provSelect = document.getElementById("providerModeSelect");
   if (provSelect) {
-    provSelect.value = state.provider_mode || "auto";
+    provSelect.value = state.provider_mode === "offline" ? "auto" : state.provider_mode || "auto";
+    provSelect.disabled = state.provider_mode === "offline";
   }
+  document.getElementById("simulationToggle").checked = state.provider_mode === "offline";
   const maxApiInput = document.getElementById("maxApiCallsInput");
   if (maxApiInput) {
     maxApiInput.value = String(state.max_api_calls_per_run || 25);
@@ -1216,6 +1331,13 @@ function renderBuilder() {
   document.getElementById("defaultCabinSelect").value = state.cabin_policy.default_cabin;
   document.getElementById("longHaulCabinSelect").value = state.cabin_policy.long_haul_cabin;
   document.getElementById("longHaulThresholdInput").value = state.cabin_policy.long_haul_threshold_hours;
+
+  const shortStopsEl = document.getElementById("shortHaulStopsSelect");
+  if (shortStopsEl) shortStopsEl.value = state.stops_policy.short_haul_stops;
+  const longStopsEl = document.getElementById("longHaulStopsSelect");
+  if (longStopsEl) longStopsEl.value = state.stops_policy.long_haul_stops;
+  const nonstopThreshEl = document.getElementById("nonstopThresholdInput");
+  if (nonstopThreshEl) nonstopThreshEl.value = state.stops_policy.nonstop_threshold_hours;
 
   document.getElementById("valueOfTimeInput").value = state.weights.value_of_time_per_hour;
   document.getElementById("valueOfTimeLabel").textContent = `$${state.weights.value_of_time_per_hour} / hr`;
@@ -1343,6 +1465,11 @@ function renderBuilder() {
         stop.outbound_cabin = val;
         onStateMutated();
       },
+      currentStops: stop.outbound_stops || "auto",
+      onSelectStops: (val) => {
+        stop.outbound_stops = val;
+        onStateMutated();
+      },
     });
     matrixEl.appendChild(connector);
 
@@ -1461,6 +1588,11 @@ function renderBuilder() {
       state.return_leg_cabin = val;
       onStateMutated();
     },
+    currentStops: state.return_leg_stops || "auto",
+    onSelectStops: (val) => {
+      state.return_leg_stops = val;
+      onStateMutated();
+    },
   });
   matrixEl.appendChild(returnConnector);
 
@@ -1541,10 +1673,12 @@ async function runOptimization() {
     earliest_return: state.earliest_return || state.latest_return,
     latest_return: state.latest_return,
     return_leg_cabin: state.return_leg_cabin,
+    return_leg_stops: state.return_leg_stops || "auto",
     ordering_mode: state.ordering_mode,
     stops: state.stops,
     baggage: state.baggage,
     cabin_policy: state.cabin_policy,
+    stops_policy: state.stops_policy || DEFAULT_STOPS_POLICY,
     weights: state.weights,
     provider_mode: state.provider_mode || "auto",
     max_api_calls_per_run: Number(state.max_api_calls_per_run || 25),
@@ -1647,7 +1781,7 @@ function renderOptimizationResults(data) {
           (l) => `
           <div class="ticket-leg-row">
             <div>
-              <span class="badge-subtle" style="margin-left:0.3rem" title="Data source provider">${escapeHtml(l.provider)}</span>
+              <span class="badge-subtle" style="margin-left:0.3rem" title="Data source provider">${escapeHtml(l.provider === "pricing_engine" ? "Simulated estimate" : l.provider)}</span>
               <strong>${escapeHtml(l.origin)} → ${escapeHtml(l.destination)}</strong>
               <span>(${escapeHtml(l.departure_date)})</span>
               <span class="cabin-tag ${escapeHtml(l.cabin)}">${escapeHtml(formatCabinName(l.cabin))}</span>
@@ -1838,11 +1972,12 @@ async function initApp() {
       max_nights: 5,
       fixed_order: false,
       outbound_cabin: "auto",
+      outbound_stops: "auto",
     });
     onStateMutated();
   });
 
-  // Baggage & Cabin & Sliders
+  // Baggage & Cabin & Stops & Sliders
   document.getElementById("includeCarryOnCheck").addEventListener("change", (e) => {
     state.baggage.include_carry_on = e.target.checked;
     onStateMutated();
@@ -1870,6 +2005,33 @@ async function initApp() {
       onStateMutated();
     }
   });
+
+  const shortHaulStopsEl = document.getElementById("shortHaulStopsSelect");
+  if (shortHaulStopsEl) {
+    shortHaulStopsEl.addEventListener("change", (e) => {
+      state.stops_policy.short_haul_stops = e.target.value;
+      onStateMutated();
+    });
+  }
+
+  const longHaulStopsEl = document.getElementById("longHaulStopsSelect");
+  if (longHaulStopsEl) {
+    longHaulStopsEl.addEventListener("change", (e) => {
+      state.stops_policy.long_haul_stops = e.target.value;
+      onStateMutated();
+    });
+  }
+
+  const nonstopThresholdEl = document.getElementById("nonstopThresholdInput");
+  if (nonstopThresholdEl) {
+    nonstopThresholdEl.addEventListener("change", (e) => {
+      const val = parseFloat(e.target.value);
+      if (!isNaN(val) && val >= 0.5) {
+        state.stops_policy.nonstop_threshold_hours = val;
+        onStateMutated();
+      }
+    });
+  }
 
   document.getElementById("valueOfTimeInput").addEventListener("input", (e) => {
     state.weights.value_of_time_per_hour = parseFloat(e.target.value);
@@ -1902,7 +2064,12 @@ async function initApp() {
     state.weights.enable_hub_splitting = e.target.checked;
     onStateMutated();
   });
-const provSelect = document.getElementById("providerModeSelect");
+  document.getElementById("simulationToggle").addEventListener("change", (e) => {
+    state.provider_mode = testingMode && e.target.checked ? "offline" : "auto";
+    onStateMutated();
+  });
+
+  const provSelect = document.getElementById("providerModeSelect");
   if (provSelect) {
     provSelect.addEventListener("change", (e) => {
       state.provider_mode = e.target.value;
@@ -1950,16 +2117,18 @@ const provSelect = document.getElementById("providerModeSelect");
     runOptimization();
   });
 
-  renderBuilder();
   try {
     const statusResp = await fetch("/api/provider-status");
     if (statusResp.ok) {
       const statusData = await statusResp.json();
+      testingMode = statusData.testing_mode === true;
       updateCacheStatusUI(statusData.cache_stats);
     }
   } catch (_err) {
     // Ignore status fetch error on init
   }
+  document.getElementById("simulationControl").classList.toggle("hidden", !testingMode);
+  renderBuilder();
 }
 
 document.addEventListener("DOMContentLoaded", initApp);

@@ -31,6 +31,126 @@ AIRLINE_METADATA_BY_NAME: dict[str, tuple[str, str, bool, float]] = {
     c.name.lower(): (c.code, c.alliance, c.is_lcc, c.bag_fee_usd) for c in CARRIERS
 }
 
+# Minimal IATA 2-letter alliance & LCC rosters so live Google Flights carriers are tagged
+# accurately without hardcoding hub/route profiles in CARRIERS.
+_ALLIANCE_ROSTERS: dict[str, tuple[str, ...]] = {
+    "Star Alliance": (
+        "A3",
+        "AC",
+        "AI",
+        "AV",
+        "BR",
+        "CA",
+        "CM",
+        "ET",
+        "EW",
+        "LH",
+        "LO",
+        "LX",
+        "MS",
+        "NH",
+        "NZ",
+        "OS",
+        "OU",
+        "OZ",
+        "SN",
+        "SQ",
+        "TG",
+        "TK",
+        "TP",
+        "UA",
+        "ZH",
+    ),
+    "Oneworld": (
+        "AA",
+        "AS",
+        "AT",
+        "AY",
+        "BA",
+        "CX",
+        "EI",
+        "FJ",
+        "IB",
+        "JL",
+        "MH",
+        "QF",
+        "QR",
+        "RJ",
+        "UL",
+        "WY",
+    ),
+    "SkyTeam": (
+        "AF",
+        "AM",
+        "AR",
+        "AZ",
+        "CI",
+        "DL",
+        "GA",
+        "KE",
+        "KL",
+        "KQ",
+        "ME",
+        "MU",
+        "RO",
+        "SK",
+        "SV",
+        "UX",
+        "VN",
+        "VS",
+    ),
+    "LCC": ("U2", "FR", "W6", "VY", "WN", "B6", "NK", "F9", "ZG", "AK", "TR", "GQ", "DY"),
+}
+ALLIANCE_BY_IATA_CODE: dict[str, str] = {
+    code: alliance for alliance, codes in _ALLIANCE_ROSTERS.items() for code in codes
+}
+
+# Fallback carrier name -> IATA code when fast-flights returns type="multi"
+_NAME_TO_IATA: tuple[tuple[str, str], ...] = (
+    ("aegean", "A3"),
+    ("air canada", "AC"),
+    ("austrian", "OS"),
+    ("brussels", "SN"),
+    ("lufthansa", "LH"),
+    ("swiss", "LX"),
+    ("tap air portugal", "TP"),
+    ("turkish", "TK"),
+    ("united", "UA"),
+    ("ana", "NH"),
+    ("singapore", "SQ"),
+    ("eva air", "BR"),
+    ("american", "AA"),
+    ("alaska", "AS"),
+    ("british airways", "BA"),
+    ("cathay", "CX"),
+    ("finnair", "AY"),
+    ("iberia", "IB"),
+    ("japan airlines", "JL"),
+    ("qantas", "QF"),
+    ("qatar", "QR"),
+    ("royal jordanian", "RJ"),
+    ("aer lingus", "EI"),
+    ("air france", "AF"),
+    ("delta", "DL"),
+    ("klm", "KL"),
+    ("virgin atlantic", "VS"),
+    ("ita", "AZ"),
+    ("sas", "SK"),
+    ("korean air", "KE"),
+    ("china airlines", "CI"),
+    ("easyjet", "U2"),
+    ("ryanair", "FR"),
+    ("wizz", "W6"),
+    ("vueling", "VY"),
+    ("jetblue", "B6"),
+    ("southwest", "WN"),
+    ("sky express", "GQ"),
+    ("zipair", "ZG"),
+    ("airasia", "AK"),
+    ("scoot", "TR"),
+    ("norwegian", "DY"),
+)
+
 
 def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str, str, bool, float]:
     """Return (code, alliance, is_lcc, default_bag_fee) from live carrier code or name."""
@@ -39,10 +159,21 @@ def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str,
         alliance, is_lcc, bag_fee = AIRLINE_METADATA_BY_CODE[code]
         return code, alliance, is_lcc, bag_fee
 
+    if code in ALLIANCE_BY_IATA_CODE:
+        alliance = ALLIANCE_BY_IATA_CODE[code]
+        is_lcc = alliance == "LCC"
+        return code, alliance, is_lcc, (50.0 if is_lcc else 40.0)
+
     lower_name = airline_name.strip().lower()
     for known_name, (k_code, alliance, is_lcc, bag_fee) in AIRLINE_METADATA_BY_NAME.items():
         if known_name in lower_name or lower_name in known_name:
             return (code or k_code), alliance, is_lcc, bag_fee
+
+    for frag, f_code in _NAME_TO_IATA:
+        if frag in lower_name:
+            alliance = ALLIANCE_BY_IATA_CODE.get(f_code, "Non-Aligned")
+            is_lcc = alliance == "LCC"
+            return (code or f_code), alliance, is_lcc, (50.0 if is_lcc else 40.0)
 
     fallback_code = code if len(code) == 2 else (airline_name[:2].upper() if airline_name else "FL")
     return fallback_code, "Non-Aligned", False, 45.0
@@ -53,7 +184,7 @@ class CompositeFlightProvider(FlightSearchProvider):
     - `fast_flights`: Free live Google Flights protobuf scraping with proactive rate-limiting.
     - `serpapi`: Official SerpApi Google Flights JSON API with multi-airport comma batching & quota cap.
     - `auto`: Uses `fast_flights` first (0 SerpApi quota), falling back to `serpapi` if needed.
-    - `offline`: Deterministic local simulation (`RealisticPricingProvider`).
+    - `offline`: Test-only local simulation (`RealisticPricingProvider`); requires FARESPLIT_TESTING=1.
     """
 
     def __init__(
@@ -78,6 +209,9 @@ class CompositeFlightProvider(FlightSearchProvider):
         self.warnings: list[str] = []
         self._last_request_ts = 0.0
 
+    def is_simulation(self) -> bool:
+        return self.mode == ProviderMode.OFFLINE
+
     def configure_for_run(
         self,
         cache: FlightCache,
@@ -93,6 +227,8 @@ class CompositeFlightProvider(FlightSearchProvider):
         self.cap_reached_warned = False
         self.warnings = []
         cache.active_provider = mode.value
+        if mode == ProviderMode.OFFLINE and os.environ.get("FARESPLIT_TESTING") != "1":
+            raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
 
     def _throttle(self, default_delay: float) -> None:
         delay = self.rate_limit_seconds if self.rate_limit_seconds is not None else default_delay
@@ -109,7 +245,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                 self.cap_reached_warned = True
                 self.warnings.append(
                     f"Reached per-run live API limit ({self.max_api_calls} queries). "
-                    "Remaining uncached legs used local estimates; run Optimize again to fetch more live legs."
+                    "Remaining uncached legs were skipped; run Optimize again to fetch more live legs."
                 )
             return False
         return True
@@ -172,6 +308,8 @@ class CompositeFlightProvider(FlightSearchProvider):
             return []
 
         if self.mode == ProviderMode.OFFLINE:
+            if os.environ.get("FARESPLIT_TESTING") != "1":
+                raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
             return self.fallback.search_leg(origin, destination, departure_date, cabin)
 
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
@@ -195,7 +333,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                 except Exception as exc:
                     self.warnings.append(f"SerpApi query ({origin}→{destination} on {departure_date}) failed: {exc}")
 
-        return self.fallback.search_leg(origin, destination, departure_date, cabin)
+        return []
 
     def _search_fast_flights(
         self,
@@ -231,6 +369,7 @@ class CompositeFlightProvider(FlightSearchProvider):
             passengers=Passengers(adults=1),
             currency="USD",
             language="en",
+            hide_separate_and_self_transfer=True,
         )
         result_list = get_flights(query)
         return self.parse_fast_flights_results(
@@ -240,6 +379,33 @@ class CompositeFlightProvider(FlightSearchProvider):
             departure_date=departure_date,
             cabin=cabin,
         )
+
+    @staticmethod
+    def _select_diverse_by_stops(
+        items: list[Any],
+        stops_fn: Any,
+        price_fn: Any,
+        max_total: int = 15,
+    ) -> list[Any]:
+        """Preserve top options across each stops bucket (nonstop, 1-stop, 2+-stop) before capping,
+        so direct and 1-stop flights are never truncated by cheaper multi-stop itineraries.
+        """
+        buckets: dict[int, list[Any]] = {0: [], 1: [], 2: []}
+        for item in items:
+            s = min(2, max(0, int(stops_fn(item))))
+            buckets[s].append(item)
+        for s in buckets:
+            buckets[s].sort(key=price_fn)
+
+        selected: list[Any] = []
+        # Take up to 5 from each bucket first (prioritizing nonstop and 1-stop)
+        for s in (0, 1, 2):
+            selected.extend(buckets[s][:5])
+        if len(selected) < max_total:
+            remaining = [it for it in items if it not in selected]
+            remaining.sort(key=price_fn)
+            selected.extend(remaining[: max_total - len(selected)])
+        return selected[:max_total]
 
     @staticmethod
     def parse_fast_flights_results(
@@ -253,8 +419,18 @@ class CompositeFlightProvider(FlightSearchProvider):
         if not results:
             return []
 
+        valid_items = [
+            item for item in results if getattr(item, "price", None) and (getattr(item, "flights", None) or [])
+        ]
+        diverse_items = CompositeFlightProvider._select_diverse_by_stops(
+            valid_items,
+            stops_fn=lambda it: max(0, len(getattr(it, "flights", []) or []) - 1),
+            price_fn=lambda it: float(getattr(it, "price", 0) or 0),
+            max_total=15,
+        )
+
         options: list[FlightLegOption] = []
-        for idx, item in enumerate(results[:10]):
+        for idx, item in enumerate(diverse_items):
             price_val = getattr(item, "price", None)
             raw_flights = getattr(item, "flights", None) or []
             airlines_list = getattr(item, "airlines", None) or []
@@ -263,7 +439,9 @@ class CompositeFlightProvider(FlightSearchProvider):
 
             ow_price = float(price_val)
             primary_airline_name = str(airlines_list[0]) if airlines_list else "Airline"
-            carrier_code, alliance, is_lcc, bag_fee = resolve_airline_metadata("", primary_airline_name)
+            raw_type = str(getattr(item, "type", "") or "").strip().upper()
+            type_code = raw_type if len(raw_type) == 2 and raw_type.isalnum() else ""
+            carrier_code, alliance, is_lcc, bag_fee = resolve_airline_metadata(type_code, primary_airline_name)
             if not is_lcc and cabin in (ConcreteCabinClass.BUSINESS, ConcreteCabinClass.FIRST):
                 bag_fee = 0.0
 
@@ -399,8 +577,16 @@ class CompositeFlightProvider(FlightSearchProvider):
         fallback_orig = origin.split(",")[0].strip().upper()
         fallback_dest = destination.split(",")[0].strip().upper()
 
+        valid_raw = [item for item in flights_raw if item.get("price") is not None and (item.get("flights") or [])]
+        diverse_raw = CompositeFlightProvider._select_diverse_by_stops(
+            valid_raw,
+            stops_fn=lambda it: max(0, len(it.get("flights") or []) - 1),
+            price_fn=lambda it: float(it.get("price") or 0),
+            max_total=15,
+        )
+
         parsed_options: list[FlightLegOption] = []
-        for idx, item in enumerate(flights_raw[:12]):
+        for idx, item in enumerate(diverse_raw):
             price_raw = item.get("price")
             if price_raw is None:
                 continue

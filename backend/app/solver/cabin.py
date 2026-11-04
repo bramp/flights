@@ -1,4 +1,4 @@
-"""Per-leg and duration-based cabin class resolver."""
+"""Per-leg and duration-based cabin class and transfer limit resolver."""
 
 from __future__ import annotations
 
@@ -7,6 +7,10 @@ from backend.app.models.schemas import (
     CabinClass,
     CabinPolicy,
     ConcreteCabinClass,
+    ConcreteStopsMode,
+    FlightLegOption,
+    StopsMode,
+    StopsPolicy,
 )
 
 CABIN_RANK: dict[ConcreteCabinClass, int] = {
@@ -38,3 +42,46 @@ def highest_cabin(cabins: list[ConcreteCabinClass]) -> ConcreteCabinClass:
     if not cabins:
         return ConcreteCabinClass.ECONOMY
     return max(cabins, key=lambda c: CABIN_RANK[c])
+
+
+def _stops_mode_to_limit(mode: ConcreteStopsMode) -> int | None:
+    if mode == ConcreteStopsMode.NONSTOP:
+        return 0
+    if mode == ConcreteStopsMode.ONE_STOP:
+        return 1
+    return None
+
+
+def resolve_leg_max_stops(
+    origin: str,
+    destination: str,
+    requested_stops: StopsMode,
+    policy: StopsPolicy,
+) -> int | None:
+    """Resolve a leg's maximum allowed stops using either its explicit override or the duration rule.
+    Returns 0 for Nonstop, 1 for <=1 Stop, or None for Any stops.
+    """
+    if requested_stops != StopsMode.AUTO:
+        return _stops_mode_to_limit(ConcreteStopsMode(requested_stops.value))
+
+    est_hours = estimate_nonstop_hours(origin, destination)
+    if est_hours < policy.nonstop_threshold_hours:
+        return _stops_mode_to_limit(policy.short_haul_stops)
+    return _stops_mode_to_limit(policy.long_haul_stops)
+
+
+def filter_options_by_stops(
+    options: list[FlightLegOption],
+    max_stops: int | None,
+) -> list[FlightLegOption]:
+    """Filter candidate flight options to those matching `max_stops`, or gracefully fall back
+    to the minimum stops count available if no flight meets the strict bound (e.g. a route
+    where no nonstop flight operates on that date).
+    """
+    if not options or max_stops is None:
+        return options
+    matching = [opt for opt in options if opt.stops_count <= max_stops]
+    if matching:
+        return matching
+    min_available = min(opt.stops_count for opt in options)
+    return [opt for opt in options if opt.stops_count == min_available]

@@ -24,6 +24,19 @@ class ConcreteCabinClass(StrEnum):
     FIRST = "first"
 
 
+class StopsMode(StrEnum):
+    AUTO = "auto"
+    NONSTOP = "nonstop"
+    ONE_STOP = "one_stop"
+    ANY = "any"
+
+
+class ConcreteStopsMode(StrEnum):
+    NONSTOP = "nonstop"
+    ONE_STOP = "one_stop"
+    ANY = "any"
+
+
 class TicketType(StrEnum):
     ONE_WAY = "one_way"
     ROUND_TRIP = "round_trip"
@@ -59,6 +72,17 @@ class CabinPolicy(BaseModel):
         ge=1.0,
         le=24.0,
         description="Flights at or above this duration use long_haul_cabin when a leg is set to 'auto'.",
+    )
+
+
+class StopsPolicy(BaseModel):
+    short_haul_stops: ConcreteStopsMode = ConcreteStopsMode.NONSTOP
+    long_haul_stops: ConcreteStopsMode = ConcreteStopsMode.ONE_STOP
+    nonstop_threshold_hours: float = Field(
+        default=4.5,
+        ge=0.5,
+        le=24.0,
+        description="Flights under this estimated nonstop duration use short_haul_stops when a leg is set to 'auto'.",
     )
 
 
@@ -112,6 +136,10 @@ class CityStopSpec(BaseModel):
         default=CabinClass.AUTO,
         description="Cabin preference for the flight arriving into or departing from this stop.",
     )
+    outbound_stops: StopsMode = Field(
+        default=StopsMode.AUTO,
+        description="Maximum stops preference for the flight arriving into this stop.",
+    )
 
     @model_validator(mode="after")
     def validate_nights_and_airports(self) -> CityStopSpec:
@@ -133,10 +161,12 @@ class TripRequest(BaseModel):
     earliest_return: date | None = None
     latest_return: date
     return_leg_cabin: CabinClass = CabinClass.AUTO
+    return_leg_stops: StopsMode = StopsMode.AUTO
     ordering_mode: Literal["flexible", "fixed", "auto_tsp"] = "flexible"
     stops: list[CityStopSpec] = Field(min_length=1, max_length=8)
     baggage: BaggageConfig = Field(default_factory=BaggageConfig)
     cabin_policy: CabinPolicy = Field(default_factory=CabinPolicy)
+    stops_policy: StopsPolicy = Field(default_factory=StopsPolicy)
     weights: OptimizationWeights = Field(default_factory=OptimizationWeights)
     provider_mode: ProviderMode = ProviderMode.AUTO
     max_api_calls_per_run: int = Field(

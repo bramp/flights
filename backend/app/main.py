@@ -19,7 +19,7 @@ from backend.app.data.airports import (
     get_airport,
     suggest_airports,
 )
-from backend.app.models.schemas import CacheStats, OptimizationResponse, TripRequest
+from backend.app.models.schemas import CacheStats, OptimizationResponse, ProviderMode, TripRequest
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.solver.optimizer import optimize_trip
 
@@ -50,6 +50,7 @@ def provider_status() -> dict[str, object]:
     has_serp = bool(os.environ.get("SERPAPI_KEY", "").strip())
     stats = flight_cache.get_stats()
     return {
+        "testing_mode": os.environ.get("FARESPLIT_TESTING") == "1",
         "has_serpapi_key": has_serp,
         "total_serpapi_calls_logged": stats.total_serpapi_calls_logged,
         "cache_stats": stats,
@@ -116,6 +117,8 @@ def clear_cache() -> CacheStats:
 
 @app.post("/api/optimize", response_model=OptimizationResponse)
 def run_optimization(request: TripRequest) -> OptimizationResponse:
+    if request.provider_mode == ProviderMode.OFFLINE and os.environ.get("FARESPLIT_TESTING") != "1":
+        raise HTTPException(status_code=403, detail="Simulated flights are disabled outside testing mode.")
     try:
         return optimize_trip(request, raw_provider=flight_provider, cache=flight_cache)
     except ValueError as exc:

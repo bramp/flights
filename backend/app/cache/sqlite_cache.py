@@ -93,6 +93,31 @@ class FlightCache:
                 )
                 """
             )
+            conn.execute(
+                """
+                DELETE FROM leg_search_cache
+                WHERE EXISTS (
+                    SELECT 1 FROM json_each(leg_search_cache.payload_json)
+                    WHERE COALESCE(json_extract(value, '$.provider'), 'pricing_engine') = 'pricing_engine'
+                )
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM granular_flights
+                WHERE COALESCE(json_extract(payload_json, '$.provider'), 'pricing_engine') = 'pricing_engine'
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM ticket_quote_cache
+                WHERE json_type(payload_json, '$.providers') IS NULL
+                    OR EXISTS (
+                        SELECT 1 FROM json_each(ticket_quote_cache.payload_json, '$.providers')
+                        WHERE value = 'pricing_engine'
+                    )
+                """
+            )
 
     def reset_session_counters(self) -> None:
         self.session_hits = 0
@@ -178,6 +203,8 @@ class FlightCache:
         cabin: ConcreteCabinClass,
         options: list[FlightLegOption],
     ) -> None:
+        if not options or any(option.provider == "pricing_engine" for option in options):
+            return
         key = self.make_leg_key(origin, destination, departure_date, cabin)
         now = time.time()
         serialized_list = json.dumps([opt.model_dump(mode="json") for opt in options])
@@ -252,6 +279,9 @@ class FlightCache:
         payload: dict[str, object],
     ) -> None:
         """Store a priced multi-slice ticket quote in SQLite."""
+        providers = payload.get("providers")
+        if not isinstance(providers, list) or not providers or "pricing_engine" in providers:
+            return
         now = time.time()
         with self._connect() as conn:
             conn.execute(

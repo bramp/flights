@@ -162,6 +162,9 @@ def _deterministic_noise(seed_str: str) -> float:
 class RealisticPricingProvider(FlightSearchProvider):
     """Generates realistic, deterministic flight options modeling GDS + LCC market dynamics."""
 
+    def is_simulation(self) -> bool:
+        return True
+
     def search_leg(
         self,
         origin: str,
@@ -180,6 +183,7 @@ class RealisticPricingProvider(FlightSearchProvider):
         nonstop_hours = estimate_nonstop_hours(orig, dest)
         is_intercontinental = orig_info.region != dest_info.region and dist_km > 3200
         is_short_haul = dist_km < 2600
+        is_same_region_short_haul = orig_info.region == dest_info.region and dist_km <= 2800
 
         # Day-of-week & seasonal demand factor
         weekday = departure_date.weekday()  # 0=Mon .. 6=Sun
@@ -190,15 +194,13 @@ class RealisticPricingProvider(FlightSearchProvider):
 
         for carrier in CARRIERS:
             if carrier.is_lcc:
-                # LCCs operate either short-haul within region or specific long-haul hub pairs
-                if is_short_haul and orig_info.region in carrier.regions and dest_info.region in carrier.regions:
-                    if orig in carrier.hubs or dest in carrier.hubs:
-                        # Most LCCs don't have First class; ZIPAIR/JetBlue have Business/Mint
-                        if cabin in (ConcreteCabinClass.FIRST,) or (
-                            cabin == ConcreteCabinClass.BUSINESS and carrier.code not in ("B6", "ZG", "TR")
-                        ):
-                            continue
-                        candidates.append((carrier, 0, None))
+                # LCCs operate either short-haul within region or specific long-haul pairs
+                if is_same_region_short_haul and orig_info.region in carrier.regions:
+                    if cabin in (ConcreteCabinClass.FIRST,) or (
+                        cabin == ConcreteCabinClass.BUSINESS and carrier.code not in ("B6", "ZG", "TR")
+                    ):
+                        continue
+                    candidates.append((carrier, 0, None))
                 elif not is_short_haul and orig in carrier.hubs and dest in carrier.hubs:
                     if cabin != ConcreteCabinClass.FIRST:
                         candidates.append((carrier, 0, None))
@@ -210,13 +212,19 @@ class RealisticPricingProvider(FlightSearchProvider):
             if not (serves_orig_region and serves_dest_region):
                 continue
 
-            if orig in carrier.hubs or dest in carrier.hubs:
-                # Direct flight on hub carrier
+            can_fly_direct = is_same_region_short_haul or (
+                (orig in carrier.hubs or dest in carrier.hubs)
+                and (
+                    not is_intercontinental or (orig_info.is_major_hub and dest_info.is_major_hub and dist_km <= 10500)
+                )
+            )
+            if can_fly_direct:
+                # Direct flight on intra-regional hop or hub carrier
                 candidates.append((carrier, 0, None))
             else:
                 # 1-stop via the carrier's primary hub if geographically reasonable
-                via_hub = carrier.hubs[0]
-                if via_hub not in (orig, dest):
+                via_hub = next((h for h in carrier.hubs if h not in (orig, dest)), None)
+                if via_hub is not None:
                     d_via = haversine_km(orig, via_hub) + haversine_km(via_hub, dest)
                     if d_via <= dist_km * 1.48:
                         candidates.append((carrier, 1, via_hub))
@@ -230,6 +238,10 @@ class RealisticPricingProvider(FlightSearchProvider):
         for alliance_name, fb_carrier in fallback_by_alliance.items():
             if alliance_name not in alliances_present:
                 via = fb_carrier.hubs[0] if fb_carrier.hubs[0] not in (orig, dest) else None
+                if via is not None:
+                    d_via = haversine_km(orig, via) + haversine_km(via, dest)
+                    if is_same_region_short_haul or d_via > dist_km * 1.48:
+                        via = None
                 stops = 0 if via is None else 1
                 candidates.append((fb_carrier, stops, via))
 

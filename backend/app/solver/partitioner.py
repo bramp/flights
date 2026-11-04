@@ -13,7 +13,12 @@ from backend.app.models.schemas import (
     TripRequest,
 )
 from backend.app.providers.base import FlightSearchProvider
-from backend.app.solver.cabin import highest_cabin, resolve_leg_cabin
+from backend.app.solver.cabin import (
+    filter_options_by_stops,
+    highest_cabin,
+    resolve_leg_cabin,
+    resolve_leg_max_stops,
+)
 from backend.app.solver.hub_splitter import evaluate_hub_split_candidates
 from backend.app.solver.pareto import compute_effective_score
 from backend.app.solver.route_dag import CandidateSchedule, PlannedLegSpec
@@ -37,7 +42,7 @@ def _fetch_all_airport_pair_options(
     cabin_override: ConcreteCabinClass | None = None,
 ) -> list[FlightLegOption]:
     """Query allowed (origin_airport, destination_airport) pairs for a planned leg,
-    using batched search when supported by the provider.
+    using batched search when supported by the provider, and filter by the leg's resolved max_stops.
     """
     origs = leg_spec.origin_airports
     dests = leg_spec.destination_airports
@@ -46,7 +51,9 @@ def _fetch_all_airport_pair_options(
     if len(origs) == 1 and len(dests) == 1 and origs[0].upper() == dests[0].upper():
         return []
     cabin = cabin_override or resolve_leg_cabin(origs[0], dests[0], leg_spec.requested_cabin, request.cabin_policy)
-    return provider.search_leg_batch(origs, dests, leg_spec.departure_date, cabin)
+    raw_options = provider.search_leg_batch(origs, dests, leg_spec.departure_date, cabin)
+    max_stops = resolve_leg_max_stops(origs[0], dests[0], leg_spec.requested_stops, request.stops_policy)
+    return filter_options_by_stops(raw_options, max_stops)
 
 
 def _leg_generalized_cost(

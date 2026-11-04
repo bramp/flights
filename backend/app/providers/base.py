@@ -21,6 +21,9 @@ class SliceQuery:
 class FlightSearchProvider(ABC):
     """Protocol for fetching candidate flight options and multi-slice ticket quotes."""
 
+    def is_simulation(self) -> bool:
+        return False
+
     @abstractmethod
     def search_leg(
         self,
@@ -100,6 +103,8 @@ class CachedFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
+        if self.delegate.is_simulation():
+            return self.delegate.search_leg(origin, destination, departure_date, cabin)
         if not self.force_refresh:
             cached = self.cache.get_leg_options(origin, destination, departure_date, cabin)
             if cached is not None:
@@ -124,6 +129,9 @@ class CachedFlightProvider(FlightSearchProvider):
         if not clean_origs or not clean_dests:
             return []
 
+        if self.delegate.is_simulation():
+            return self.delegate.search_leg_batch(clean_origs, clean_dests, departure_date, cabin)
+
         batch_orig_key = ",".join(clean_origs)
         batch_dest_key = ",".join(clean_dests)
         if not self.force_refresh:
@@ -141,6 +149,8 @@ class CachedFlightProvider(FlightSearchProvider):
         legs: list[FlightLegOption],
         ticket_type: TicketType,
     ) -> float:
+        if self.delegate.is_simulation() or any(leg.provider == "pricing_engine" for leg in legs):
+            return self.delegate.quote_multi_slice_ticket(legs, ticket_type)
         quote_key = f"{ticket_type.value}:" + "|".join(f"{leg.leg_id}:{leg.cabin.value}" for leg in legs)
         if not self.force_refresh:
             cached_quote = self.cache.get_ticket_quote(quote_key)
@@ -151,6 +161,10 @@ class CachedFlightProvider(FlightSearchProvider):
         self.cache.store_ticket_quote(
             quote_key=quote_key,
             ticket_type=ticket_type.value,
-            payload={"base_fare_usd": fare, "legs": [leg.leg_id for leg in legs]},
+            payload={
+                "base_fare_usd": fare,
+                "legs": [leg.leg_id for leg in legs],
+                "providers": [leg.provider for leg in legs],
+            },
         )
         return fare

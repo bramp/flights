@@ -24,9 +24,13 @@
             <option value="auto">⚡ Auto (Fast-Flights Free + SerpApi)</option>
             <option value="fast_flights">🌐 Fast-Flights Only (Free Live Scraper)</option>
             <option value="serpapi">🔑 SerpApi Only (Batched Quota-Saver)</option>
-            <option value="offline">🧪 Offline Simulator (0 Quota)</option>
           </select>
         </div>
+
+        <label id="simulationControl" class="inline-check hidden">
+          <input type="checkbox" id="simulationToggle" />
+          <span>Simulated data (testing)</span>
+        </label>
 
         <div class="preset-group">
           <label for="presetSelect" class="sr-only">Load Sample Trip</label>
@@ -120,6 +124,34 @@
               <option value="premium_economy">Prem Econ</option>
               <option value="business" selected>Business</option>
               <option value="first">First</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <label title="Used when a flight connector's stops limit is set to Auto">🛑 "Auto" Stops Rule</label>
+          <div class="inline-inputs">
+            <select id="shortHaulStopsSelect" class="input-select compact" title="Max stops for short-haul legs">
+              <option value="nonstop" selected>Nonstop</option>
+              <option value="one_stop">≤1 Stop</option>
+              <option value="any">Any</option>
+            </select>
+            <span class="muted-sep">under</span>
+            <input
+              type="number"
+              id="nonstopThresholdInput"
+              class="input-number compact-num"
+              min="1"
+              max="14"
+              step="0.5"
+              value="4.5"
+              title="Estimated nonstop duration threshold (hours) for requiring direct vs connecting flights"
+            />
+            <span class="muted-sep">h, else</span>
+            <select id="longHaulStopsSelect" class="input-select compact" title="Max stops for longer legs">
+              <option value="nonstop">Nonstop</option>
+              <option value="one_stop" selected>≤1 Stop</option>
+              <option value="any">Any</option>
             </select>
           </div>
         </div>

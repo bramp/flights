@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from backend.app import main
 from backend.app.main import app
 
 client = TestClient(app)
@@ -20,7 +22,9 @@ def test_health_and_airports_endpoints() -> None:
     assert any(item["code"] == "LHR" for item in data["suggestions"])
 
 
-def test_optimize_and_cache_endpoints() -> None:
+def test_simulation_is_testing_only_and_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FARESPLIT_TESTING", "1")
+    assert client.get("/api/provider-status").json()["testing_mode"] is True
     client.post("/api/cache/clear")
 
     payload = {
@@ -80,14 +84,30 @@ def test_optimize_and_cache_endpoints() -> None:
     body1 = r1.json()
     assert body1["recommended"]["total_price_usd"] > 0
     assert len(body1["strategy_comparison"]) >= 4
-    assert body1["cache_stats"]["total_cached_flights_in_db"] > 0
+    assert body1["cache_stats"]["total_cached_flights_in_db"] == 0
+    assert body1["cache_stats"]["total_cached_quotes_in_db"] == 0
+    assert any("simulated" in warning for warning in body1["warnings"])
 
-    # Second run with identical parameters should hit SQLite cache with 0 misses
     r2 = client.post("/api/optimize", json=payload)
     assert r2.status_code == 200
     body2 = r2.json()
     assert body2["cache_stats"]["cache_misses"] == 0
-    assert body2["cache_stats"]["cache_hits"] > 0
+    assert body2["cache_stats"]["cache_hits"] == 0
+    assert body2["cache_stats"]["total_cached_flights_in_db"] == 0
+    assert body2["cache_stats"]["total_cached_quotes_in_db"] == 0
+
+    monkeypatch.delenv("FARESPLIT_TESTING")
+    assert client.get("/api/provider-status").json()["testing_mode"] is False
+    rejected = client.post("/api/optimize", json=payload)
+    assert rejected.status_code == 403
+    assert "disabled" in rejected.json()["detail"]
+
+    monkeypatch.setattr(main.flight_provider, "_search_fast_flights", lambda *args: [])
+    monkeypatch.setattr(main.flight_provider, "_search_serpapi_google_flights", lambda *args: [])
+    payload["provider_mode"] = "auto"
+    failed_live = client.post("/api/optimize", json=payload)
+    assert failed_live.status_code == 400
+    assert "No valid flight combinations" in failed_live.json()["detail"]
 
 
 def test_optimize_rejects_degenerate_same_airport_stop() -> None:

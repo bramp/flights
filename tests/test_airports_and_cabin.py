@@ -17,8 +17,17 @@ from backend.app.models.schemas import (
     CabinClass,
     CabinPolicy,
     ConcreteCabinClass,
+    ConcreteStopsMode,
+    StopsMode,
+    StopsPolicy,
 )
-from backend.app.solver.cabin import highest_cabin, resolve_leg_cabin
+from backend.app.providers.pricing_engine import RealisticPricingProvider
+from backend.app.solver.cabin import (
+    filter_options_by_stops,
+    highest_cabin,
+    resolve_leg_cabin,
+    resolve_leg_max_stops,
+)
 
 
 @pytest.mark.parametrize(
@@ -95,3 +104,29 @@ def test_resolve_leg_cabin_auto_and_explicit() -> None:
 def test_highest_cabin_ranking() -> None:
     assert highest_cabin([ConcreteCabinClass.ECONOMY, ConcreteCabinClass.BUSINESS]) == ConcreteCabinClass.BUSINESS
     assert highest_cabin([ConcreteCabinClass.PREMIUM_ECONOMY, ConcreteCabinClass.FIRST]) == ConcreteCabinClass.FIRST
+
+
+def test_resolve_leg_max_stops_and_filtering() -> None:
+    from datetime import date
+
+    policy = StopsPolicy(
+        short_haul_stops=ConcreteStopsMode.NONSTOP,
+        long_haul_stops=ConcreteStopsMode.ONE_STOP,
+        nonstop_threshold_hours=4.5,
+    )
+    # ATH -> JTR (~0.9h < 4.5h) under AUTO resolves to 0 stops (Nonstop)
+    assert resolve_leg_max_stops("ATH", "JTR", StopsMode.AUTO, policy) == 0
+    # SFO -> ATH (~13.6h >= 4.5h) under AUTO resolves to 1 stop
+    assert resolve_leg_max_stops("SFO", "ATH", StopsMode.AUTO, policy) == 1
+    # Explicit overrides
+    assert resolve_leg_max_stops("SFO", "ATH", StopsMode.NONSTOP, policy) == 0
+    assert resolve_leg_max_stops("ATH", "JTR", StopsMode.ANY, policy) is None
+
+    prov = RealisticPricingProvider()
+    ath_jtr = prov.search_leg("ATH", "JTR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)
+    assert ath_jtr and all(o.stops_count == 0 for o in filter_options_by_stops(ath_jtr, 0))
+
+    # When no nonstop exists (e.g. SFO -> ATH), filter_options_by_stops(0) falls back to 1-stop
+    sfo_ath = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)
+    filtered_sfo_ath = filter_options_by_stops(sfo_ath, 0)
+    assert filtered_sfo_ath and all(o.stops_count == 1 for o in filtered_sfo_ath)

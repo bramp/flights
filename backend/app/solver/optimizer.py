@@ -12,6 +12,7 @@ from backend.app.models.schemas import (
 )
 from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
+from backend.app.solver.cabin import resolve_leg_max_stops
 from backend.app.solver.pareto import (
     annotate_badges,
     extract_pareto_frontier,
@@ -49,6 +50,8 @@ def optimize_trip(
     )
 
     warnings: list[str] = []
+    if request.provider_mode == ProviderMode.OFFLINE:
+        warnings.append("TESTING: All flights and fares shown are simulated, not bookable, and are never cached.")
     total_window_days = (request.latest_return - request.earliest_departure).days
     min_req_nights = sum(s.min_nights for s in request.stops)
     if total_window_days < min_req_nights:
@@ -77,7 +80,8 @@ def optimize_trip(
     if not all_evaluated:
         raise ValueError(
             "No valid flight combinations found for the requested stops and dates "
-            "(ensure consecutive stops do not share the exact same single airport)."
+            "(check distinct airports, live provider availability, and query limits). "
+            + " ".join(dict.fromkeys(warnings))
         )
 
     all_evaluated.sort(key=lambda i: i.effective_score)
@@ -104,6 +108,22 @@ def optimize_trip(
             itin.savings_vs_all_one_ways_usd = round(baseline_ow.total_price_usd - itin.total_price_usd, 2)
 
     recommended = all_evaluated[0]
+    if recommended.strategy != StrategyKind.HUB_SPLIT and len(recommended.legs) == len(recommended.stop_visits) + 1:
+        stops_by_id = {s.id: s for s in request.stops}
+        for idx, leg in enumerate(recommended.legs):
+            if idx < len(recommended.stop_visits):
+                stop_spec = stops_by_id.get(recommended.stop_visits[idx].stop_id)
+                req_stops = stop_spec.outbound_stops if stop_spec else request.return_leg_stops
+            else:
+                req_stops = request.return_leg_stops
+            target_max = resolve_leg_max_stops(leg.origin, leg.destination, req_stops, request.stops_policy)
+            if target_max is not None and leg.stops_count > target_max:
+                limit_label = "nonstop" if target_max == 0 else f"≤{target_max} stop"
+                warnings.append(
+                    f"No {limit_label} flight was available for {leg.origin}→{leg.destination} on "
+                    f"{leg.departure_date.isoformat()}; relaxed to {leg.stops_count} stop(s)."
+                )
+
     return OptimizationResponse(
         recommended=recommended,
         pareto_frontier=pareto[:8],

@@ -23,13 +23,42 @@ from backend.app.models.schemas import (
     TripRequest,
 )
 from backend.app.providers.base import FlightSearchProvider
-from backend.app.solver.cabin import resolve_leg_cabin
+from backend.app.solver.cabin import (
+    filter_options_by_stops,
+    resolve_leg_cabin,
+    resolve_leg_max_stops,
+)
 from backend.app.solver.route_dag import CandidateSchedule, PlannedLegSpec
 
 
 def required_self_transfer_buffer_hours(request: TripRequest) -> float:
     """Return mandatory connection buffer (hours) for an unprotected self-transfer at a hub."""
     return 5.5 if request.baggage.checked_bags > 0 else 4.0
+
+
+def _discover_corridor_hubs(
+    orig_code: str,
+    first_dest_code: str,
+    first_leg_options: list[FlightLegOption],
+    max_hubs: int = 2,
+) -> list[str]:
+    """Discover candidate intermediate gateway hubs dynamically from the actual layover airports
+    observed in Google Flights results for `orig_code -> first_dest_code`, falling back to
+    great-circle corridor hubs only if needed.
+    """
+    hub_counts: dict[str, int] = {}
+    for opt in first_leg_options:
+        for hub in opt.layover_airports:
+            h_code = hub.strip().upper()
+            if h_code and h_code not in (orig_code.upper(), first_dest_code.upper()):
+                hub_counts[h_code] = hub_counts.get(h_code, 0) + 1
+
+    discovered = [code for code, _ in sorted(hub_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if len(discovered) < max_hubs:
+        for fallback_hub in candidate_intermediate_hubs(orig_code, first_dest_code, max_hubs=max_hubs):
+            if fallback_hub not in discovered:
+                discovered.append(fallback_hub)
+    return discovered[:max_hubs]
 
 
 def evaluate_hub_split_candidates(
@@ -50,7 +79,16 @@ def evaluate_hub_split_candidates(
     orig_code = first_spec.origin_airports[0]
     first_dest_code = first_spec.destination_airports[0]
 
-    corridor_hubs = candidate_intermediate_hubs(orig_code, first_dest_code, max_hubs=2)
+    # Respect per-leg stop limits: if the user (or Auto Stops Policy) capped Leg 0 at
+    # Nonstop (0 stops), do not split Leg 0 at an intermediate hub.
+    first_max_stops = resolve_leg_max_stops(
+        orig_code, first_dest_code, first_spec.requested_stops, request.stops_policy
+    )
+    if first_max_stops == 0:
+        return None
+
+    first_leg_options = fetch_pair_options(first_spec, request, provider)
+    corridor_hubs = _discover_corridor_hubs(orig_code, first_dest_code, first_leg_options, max_hubs=2)
     if not corridor_hubs:
         return None
 
@@ -65,8 +103,21 @@ def evaluate_hub_split_candidates(
         # Fetch Origin -> Hub (Leg 0a) and Hub -> Stop 1 (Leg 0b)
         cabin_0a = resolve_leg_cabin(orig_code, hub_code, first_spec.requested_cabin, request.cabin_policy)
         cabin_0b = resolve_leg_cabin(hub_code, first_dest_code, first_spec.requested_cabin, request.cabin_policy)
-        opts_0a = provider.search_leg(orig_code, hub_code, first_spec.departure_date, cabin_0a)
-        opts_0b = provider.search_leg(hub_code, first_dest_code, first_spec.departure_date, cabin_0b)
+        raw_0a = provider.search_leg(orig_code, hub_code, first_spec.departure_date, cabin_0a)
+        raw_0b = provider.search_leg(hub_code, first_dest_code, first_spec.departure_date, cabin_0b)
+        if not raw_0a or not raw_0b:
+            continue
+
+        # Since splitting at `hub_code` already introduces 1 self-transfer, if `first_max_stops`
+        # is 1, each sub-leg (Origin->Hub and Hub->Stop1) must be Nonstop (0 stops) so total
+        # transfers on the split outbound do not exceed 1!
+        sub_max_stops = 0 if first_max_stops == 1 else None
+        if sub_max_stops == 0:
+            opts_0a = [o for o in raw_0a if o.stops_count == 0]
+            opts_0b = [o for o in raw_0b if o.stops_count == 0]
+        else:
+            opts_0a = filter_options_by_stops(raw_0a, sub_max_stops)
+            opts_0b = filter_options_by_stops(raw_0b, sub_max_stops)
         if not opts_0a or not opts_0b:
             continue
 
