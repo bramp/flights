@@ -124,7 +124,7 @@ Do not enable `FARESPLIT_TESTING` on a deployed server.
 - **No Unsolicited Queries on Page Load:** Opening or refreshing the page loads your saved setup from cookies/localStorage without firing an optimization run until you click **🔍 Optimize Flights & Ticket Combinations**.
 - **Per-Run Live Query Cap (`Max Live API Queries / Run`):** Inside **⚙️ Weights & Hub Rules**, each run is capped at `25` uncached live queries by default so a single click can never exhaust your monthly quota.
 - **Persistent Quota & Flight Cache (`flights_cache.db`):**
-  - Live flight legs and their ticket quotes are stored in SQLite. Simulated data is never cached. Cached live flights can be reused with **0 network calls**.
+  - Live flight searches and ticket estimates are stored in SQLite. Simulated data is never cached. A matching unexpired search can be reused with **0 network calls**; individual cached flights do not substitute for a different multi-airport search.
   - The top bar displays both **`SerpApi: X / 250`** (logged persistently in SQLite across sessions) and **`Cache: Y flights`**. Flight source badges show `fast_flights` or `serpapi`; the lightning icon separately identifies cache hits.
   - On startup, legacy simulated flight entries are removed. Old ticket quotes without source metadata are invalidated because they may include simulated data; live flights and provider usage counters are preserved.
 

@@ -127,9 +127,8 @@ We use a unified `FlightSearchProvider` protocol in Python backed by a persisten
    - Models non-linear Round-Trip/Open-Jaw discounts, intercontinental One-Way surcharges on full-service carriers, point-to-point LCC pricing, and cabin multipliers so the solver works offline out of the box.
 3. **Granular SQLite Flight & Quote Cache (`sqlite_cache.py`):**
    - **`leg_search_cache`:** Caches leg search responses keyed by `origin:destination:departure_date:cabin`.
-   - **`granular_flights`:** Indexes every individual flight leg discovered by `(origin, destination, departure_date, cabin)`.
+   - **`granular_flights`:** Indexes every individual flight leg discovered by `(origin, destination, departure_date, cabin)`. Its partial results do not replace a missing or expired search response.
    - **`ticket_quote_cache`:** Caches priced multi-slice ticket quotes (`round_trip`, `open_jaw`, `multi_city`).
    - Allows instant re-optimization when tweaking stay lengths, date windows, value-of-time sliders, baggage checkboxes, or per-leg cabin classes.
 
 For the directory layout, setup commands, and pre-commit workflow, see [DEVELOPER.md](DEVELOPER.md). For usage instructions, see [README.md](README.md).
-

@@ -58,12 +58,19 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert fare_1 == fare_2
     assert cache.get_stats().cache_hits == 2
 
-    # Multi-airport batch lookup falls back to granular_flights when leg_search_cache lacks the batch key
+    # A cached SFO-LHR search does not cover the other airport pairs in a batch.
     batch_results = cached_provider.search_leg_batch(
         ("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS
     )
-    assert len(batch_results) == len(first_results)
-    assert all(opt.from_cache for opt in batch_results)
+    assert any(opt.origin == "OAK" for opt in batch_results)
+    assert any(opt.destination == "LGW" for opt in batch_results)
+    assert all(not opt.from_cache for opt in batch_results)
+    assert cache.get_stats().cache_misses == 3  # search, quote, batch
+    batch_again = cached_provider.search_leg_batch(
+        ("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS
+    )
+    assert len(batch_again) == len(batch_results)
+    assert all(opt.from_cache for opt in batch_again)
     assert cache.get_stats().cache_hits == 3
 
     # Force-refresh on search_leg_batch increments session_misses
@@ -84,6 +91,19 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert cleared_stats.total_cached_flights_in_db == 0
     assert cleared_stats.total_cached_quotes_in_db == 0
     assert cleared_stats.total_serpapi_calls_logged == 2
+
+
+def test_expired_search_is_not_recreated_from_granular_flights(tmp_path: Path) -> None:
+    cache = FlightCache(tmp_path / "expired.db", ttl_seconds=60)
+    departure = date(2026, 11, 10)
+    options = MockLiveProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    cache.store_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS, options)
+    with cache._connect() as conn:
+        conn.execute("UPDATE leg_search_cache SET updated_at = ?", (time.time() - 61,))
+
+    assert cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS) is None
+    assert cache.get_stats().cache_misses == 1
+    assert cache.get_stats().total_cached_flights_in_db == len(options)
 
 
 @pytest.mark.parametrize("mode", [ProviderMode.AUTO, ProviderMode.FAST_FLIGHTS, ProviderMode.SERPAPI])
@@ -172,9 +192,11 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
         )
     cache = FlightCache(cache.db_path)
     results = cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    assert results
-    assert len(results) == len(live) - 1
-    assert all(option.provider == "fast_flights" for option in results)
+    assert results is None
+    with cache._connect() as conn:
+        rows = conn.execute("SELECT payload_json FROM granular_flights").fetchall()
+    assert len(rows) == len(live) - 1
+    assert all(json.loads(row["payload_json"])["provider"] == "fast_flights" for row in rows)
     assert cache.get_ticket_quote("legacy-quote") is None
     assert cache.get_ticket_quote("live-quote") == {"providers": ["fast_flights"], "base_fare_usd": 200}
     assert cache.get_stats().total_serpapi_calls_logged == 1
