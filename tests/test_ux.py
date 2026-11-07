@@ -11,7 +11,8 @@ import pytest
 import uvicorn
 from playwright.sync_api import Page, Route, expect
 
-from backend.app.main import app
+from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.main import create_app
 
 
 def _find_free_port() -> int:
@@ -21,11 +22,12 @@ def _find_free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def live_server_url() -> Generator[str, None, None]:
+def live_server_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str, None, None]:
     testing_environment = pytest.MonkeyPatch()
     testing_environment.setenv("FARESPLIT_TESTING", "1")
     port = _find_free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    cache = FlightCache(tmp_path_factory.mktemp("ux-cache") / "flights.db")
+    config = uvicorn.Config(create_app(cache=cache), host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

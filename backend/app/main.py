@@ -7,11 +7,12 @@ import logging
 import os
 import queue
 import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -29,31 +30,28 @@ from backend.app.solver.optimizer import optimize_trip
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-app = FastAPI(
-    title="Multi-City Flight & Ticket Optimizer",
-    version="0.1.0",
-)
-
-flight_cache = FlightCache(
-    db_path="flights_cache.db",
-    ttl_seconds=int(float(os.environ.get("FLIGHT_CACHE_TTL_DAYS", "7")) * 86400),
-)
-_optimize_lock = threading.Lock()
 logger = logging.getLogger(__name__)
-flight_provider = CompositeFlightProvider()
+router = APIRouter()
 
 
-@app.get("/api/health")
+class AppServices:
+    def __init__(self, cache: FlightCache, provider: CompositeFlightProvider) -> None:
+        self.cache = cache
+        self.provider = provider
+        self.optimize_lock = threading.Lock()
+
+
+@router.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/provider-status")
-def provider_status() -> dict[str, object]:
+@router.get("/api/provider-status")
+def provider_status(request: Request) -> dict[str, object]:
     load_dotenv()
     has_serp = bool(os.environ.get("SERPAPI_KEY", "").strip())
-    stats = flight_cache.get_stats()
+    services: AppServices = request.app.state.services
+    stats = services.cache.get_stats()
     return {
         "testing_mode": os.environ.get("FARESPLIT_TESTING") == "1",
         "has_serpapi_key": has_serp,
@@ -62,7 +60,7 @@ def provider_status() -> dict[str, object]:
     }
 
 
-@app.get("/api/airports")
+@router.get("/api/airports")
 def list_airports(q: str = Query(default="", description="City, airport name, or IATA code")) -> dict[str, object]:
     known = all_known_airports()
     return {
@@ -87,7 +85,7 @@ def list_airports(q: str = Query(default="", description="City, airport name, or
     }
 
 
-@app.get("/api/airport/{code}")
+@router.get("/api/airport/{code}")
 def get_airport_info(code: str) -> dict[str, object]:
     info = get_airport(code)
     known = all_known_airports()
@@ -110,18 +108,20 @@ def get_airport_info(code: str) -> dict[str, object]:
     }
 
 
-@app.get("/api/cache/stats", response_model=CacheStats)
-def get_cache_stats() -> CacheStats:
-    return flight_cache.get_stats()
+@router.get("/api/cache/stats", response_model=CacheStats)
+def get_cache_stats(request: Request) -> CacheStats:
+    services: AppServices = request.app.state.services
+    return services.cache.get_stats()
 
 
-@app.post("/api/cache/clear", response_model=CacheStats)
-def clear_cache() -> CacheStats:
-    flight_cache.clear_all()
-    return flight_cache.get_stats()
+@router.post("/api/cache/clear", response_model=CacheStats)
+def clear_cache(request: Request) -> CacheStats:
+    services: AppServices = request.app.state.services
+    services.cache.clear_all()
+    return services.cache.get_stats()
 
 
-def _stream_optimization_events(request: TripRequest) -> Iterator[str]:
+def _stream_optimization_events(request: TripRequest, services: AppServices) -> Iterator[str]:
     event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
     cancelled = threading.Event()
 
@@ -132,11 +132,11 @@ def _stream_optimization_events(request: TripRequest) -> Iterator[str]:
 
     def worker() -> None:
         try:
-            with _optimize_lock:
+            with services.optimize_lock:
                 result = optimize_trip(
                     request,
-                    raw_provider=flight_provider,
-                    cache=flight_cache,
+                    raw_provider=services.provider,
+                    cache=services.cache,
                     progress_callback=on_progress,
                 )
             event_queue.put({"type": "result", "data": result.model_dump(mode="json")})
@@ -163,28 +163,57 @@ def _stream_optimization_events(request: TripRequest) -> Iterator[str]:
         cancelled.set()
 
 
-@app.post("/api/optimize", response_model=OptimizationResponse)
+@router.post("/api/optimize", response_model=OptimizationResponse)
 def run_optimization(request: TripRequest, raw_request: Request) -> OptimizationResponse | StreamingResponse:
     if request.provider_mode == ProviderMode.OFFLINE and os.environ.get("FARESPLIT_TESTING") != "1":
         raise HTTPException(status_code=403, detail="Simulated flights are disabled outside testing mode.")
 
+    services: AppServices = raw_request.app.state.services
     if raw_request.headers.get("x-stream-progress") == "1":
         return StreamingResponse(
-            _stream_optimization_events(request),
+            _stream_optimization_events(request, services),
             media_type="application/x-ndjson",
         )
 
     try:
-        with _optimize_lock:
-            return optimize_trip(request, raw_provider=flight_provider, cache=flight_cache)
+        with services.optimize_lock:
+            return optimize_trip(request, raw_provider=services.provider, cache=services.cache)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-
-@app.get("/")
+@router.get("/")
 def serve_index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+def create_app(
+    *,
+    cache: FlightCache | None = None,
+    provider: CompositeFlightProvider | None = None,
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        run_cache = cache
+        if run_cache is None:
+            run_cache = FlightCache(
+                db_path="flights_cache.db",
+                ttl_seconds=int(float(os.environ.get("FLIGHT_CACHE_TTL_DAYS", "7")) * 86400),
+            )
+        application.state.services = AppServices(
+            run_cache, provider if provider is not None else CompositeFlightProvider()
+        )
+        yield
+
+    application = FastAPI(
+        title="Multi-City Flight & Ticket Optimizer",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    application.include_router(router)
+    if STATIC_DIR.exists():
+        application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    return application
+
+
+app = create_app()

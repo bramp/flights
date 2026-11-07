@@ -39,6 +39,12 @@ HTTP/network errors and retry, trip editing, saved state, reset, and cache clear
 Uncaught browser errors and unexpected API requests fail the tests. Failed tests
 save screenshots and traces under `test-results/`.
 
+The API and real-backend browser tests use temporary SQLite databases and never
+clear the application's `flights_cache.db`. Importing the ASGI application does
+not create a cache; the default cache is opened when the server starts. Set
+`PLAYWRIGHT_TEST_OUTPUT_DIR` to change the browser artifact directory when existing
+test results need to be preserved.
+
 Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine,
 install the browser and OS dependencies with `npx playwright install --with-deps chromium`
 after `npm ci`.

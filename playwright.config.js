@@ -5,6 +5,7 @@ module.exports = defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
+  outputDir: process.env.PLAYWRIGHT_TEST_OUTPUT_DIR || "test-results",
   use: {
     baseURL: "http://127.0.0.1:8765",
     trace: "retain-on-failure",

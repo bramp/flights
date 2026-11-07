@@ -3,17 +3,51 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import main
-from backend.app.main import app
+from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.main import create_app
+from backend.app.providers.google_flights import CompositeFlightProvider
 
-client = TestClient(app)
+
+@pytest.fixture
+def flight_provider() -> CompositeFlightProvider:
+    return CompositeFlightProvider(rate_limit_seconds=0)
 
 
-def test_health_and_airports_endpoints() -> None:
+@pytest.fixture
+def client(tmp_path: Path, flight_provider: CompositeFlightProvider) -> Iterator[TestClient]:
+    application = create_app(cache=FlightCache(tmp_path / "flights.db"), provider=flight_provider)
+    with TestClient(application) as test_client:
+        yield test_client
+
+
+def test_app_initializes_default_cache_only_on_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    application = create_app()
+    assert not (tmp_path / "flights_cache.db").exists()
+    with TestClient(application) as test_client:
+        assert test_client.get("/api/health").status_code == 200
+        assert (tmp_path / "flights_cache.db").exists()
+
+
+def test_app_instances_have_independent_caches(tmp_path: Path) -> None:
+    first_cache = FlightCache(tmp_path / "first.db")
+    second_cache = FlightCache(tmp_path / "second.db")
+    first_cache.session_hits = 1
+    second_cache.session_hits = 2
+    with TestClient(create_app(cache=first_cache)) as first, TestClient(create_app(cache=second_cache)) as second:
+        assert first.get("/api/cache/stats").json()["cache_hits"] == 1
+        assert second.get("/api/cache/stats").json()["cache_hits"] == 2
+        assert first.post("/api/cache/clear").json()["cache_hits"] == 0
+        assert second.get("/api/cache/stats").json()["cache_hits"] == 2
+
+
+def test_health_and_airports_endpoints(client: TestClient) -> None:
     resp = client.get("/api/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
@@ -29,7 +63,9 @@ def test_health_and_airports_endpoints() -> None:
     assert airport_resp.json()["code"] == "LHR"
 
 
-def test_simulation_is_testing_only_and_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_simulation_is_testing_only_and_never_cached(
+    client: TestClient, flight_provider: CompositeFlightProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("FARESPLIT_TESTING", "1")
     assert client.get("/api/provider-status").json()["testing_mode"] is True
     client.post("/api/cache/clear")
@@ -109,15 +145,15 @@ def test_simulation_is_testing_only_and_never_cached(monkeypatch: pytest.MonkeyP
     assert rejected.status_code == 403
     assert "disabled" in rejected.json()["detail"]
 
-    monkeypatch.setattr(main.flight_provider, "_search_fast_flights", lambda *_args: [])
-    monkeypatch.setattr(main.flight_provider, "_search_serpapi_google_flights", lambda *_args: [])
+    monkeypatch.setattr(flight_provider, "_search_fast_flights", lambda *_args: [])
+    monkeypatch.setattr(flight_provider, "_search_serpapi_google_flights", lambda *_args: [])
     payload["provider_mode"] = "auto"
     failed_live = client.post("/api/optimize", json=payload)
     assert failed_live.status_code == 400
     assert "No valid flight combinations" in failed_live.json()["detail"]
 
 
-def test_optimize_rejects_degenerate_same_airport_stop() -> None:
+def test_optimize_rejects_degenerate_same_airport_stop(client: TestClient) -> None:
     bad_payload = {
         "origin_label": "San Francisco",
         "origin_airports": ["SFO"],
@@ -147,7 +183,7 @@ def test_optimize_rejects_degenerate_same_airport_stop() -> None:
     assert "No valid flight combinations" in error_events[0]["detail"]
 
 
-def test_optimize_streams_progress_events_and_final_result(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_optimize_streams_progress_events_and_final_result(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FARESPLIT_TESTING", "1")
     payload = {
         "origin_label": "San Francisco",
