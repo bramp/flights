@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from backend.app.data.airports import (
     estimate_nonstop_hours,
@@ -297,12 +297,14 @@ class RealisticPricingProvider(FlightSearchProvider):
                 fn_num = 100 + int(_deterministic_noise(seed_key + "-fn") * 850)
                 dep_hour = 7 + (idx * 3) % 14
                 arr_hour = int((dep_hour + total_duration) % 24)
+                arr_date = departure_date + timedelta(days=int((dep_hour + total_duration) // 24))
                 segments = [
                     FlightSegment(
                         origin=orig,
                         destination=dest,
                         departure_date=departure_date,
                         departure_time=f"{dep_hour:02d}:15",
+                        arrival_date=arr_date,
                         arrival_time=f"{arr_hour:02d}:40",
                         airline=carrier.code,
                         airline_name=carrier.name,
@@ -322,14 +324,21 @@ class RealisticPricingProvider(FlightSearchProvider):
                 fn1 = 200 + int(_deterministic_noise(seed_key + "-fn1") * 700)
                 fn2 = 200 + int(_deterministic_noise(seed_key + "-fn2") * 700)
                 dep_hour = 6 + (idx * 3) % 15
-                mid_hour = int((dep_hour + d1_hrs) % 24)
-                arr_hour = int((dep_hour + total_duration) % 24)
+                mid_total = dep_hour + d1_hrs
+                mid_hour = int(mid_total % 24)
+                mid_date = departure_date + timedelta(days=int(mid_total // 24))
+                seg2_dep_total = mid_total + layover_hours
+                seg2_dep_date = departure_date + timedelta(days=int(seg2_dep_total // 24))
+                arr_total = dep_hour + total_duration
+                arr_hour = int(arr_total % 24)
+                arr_date = departure_date + timedelta(days=int(arr_total // 24))
                 segments = [
                     FlightSegment(
                         origin=orig,
                         destination=via_hub,
                         departure_date=departure_date,
                         departure_time=f"{dep_hour:02d}:20",
+                        arrival_date=mid_date,
                         arrival_time=f"{mid_hour:02d}:10",
                         airline=carrier.code,
                         airline_name=carrier.name,
@@ -341,8 +350,9 @@ class RealisticPricingProvider(FlightSearchProvider):
                     FlightSegment(
                         origin=via_hub,
                         destination=dest,
-                        departure_date=departure_date,
+                        departure_date=seg2_dep_date,
                         departure_time=f"{int((mid_hour + layover_hours) % 24):02d}:30",
+                        arrival_date=arr_date,
                         arrival_time=f"{arr_hour:02d}:50",
                         airline=carrier.code,
                         airline_name=carrier.name,

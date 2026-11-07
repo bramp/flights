@@ -2036,6 +2036,94 @@ function getTicketGoogleFlightsUrl(ticket) {
   return "https://www.google.com/travel/flights?hl=en&curr=USD";
 }
 
+function formatTime12h(hmStr) {
+  if (!hmStr || typeof hmStr !== "string") return "";
+  const trimmed = hmStr.trim();
+  if (/am|pm/i.test(trimmed)) return trimmed;
+  const parts = trimmed.split(":");
+  if (parts.length < 2) return trimmed;
+  const hh = parseInt(parts[0], 10);
+  const mm = parseInt(parts[1], 10);
+  if (isNaN(hh) || isNaN(mm)) return trimmed;
+  const period = hh >= 12 ? "PM" : "AM";
+  const hour12 = hh % 12 || 12;
+  return `${hour12}:${String(mm).padStart(2, "0")} ${period}`;
+}
+
+function parseHmToHours(hmStr) {
+  if (!hmStr || typeof hmStr !== "string") return null;
+  const parts = hmStr.trim().split(":");
+  if (parts.length < 2) return null;
+  const hh = parseInt(parts[0], 10);
+  const mm = parseInt(parts[1], 10);
+  if (isNaN(hh) || isNaN(mm)) return null;
+  return hh + mm / 60;
+}
+
+function diffIsoDays(startIso, endIso) {
+  if (!startIso || !endIso) return 0;
+  const s = Date.parse(`${startIso}T00:00:00Z`);
+  const e = Date.parse(`${endIso}T00:00:00Z`);
+  if (isNaN(s) || isNaN(e)) return 0;
+  return Math.round((e - s) / 86400000);
+}
+
+function formatLegTimeRange(leg) {
+  if (!leg) return "";
+  const segs = Array.isArray(leg.segments) ? leg.segments : [];
+  const firstSeg = segs.length > 0 ? segs[0] : null;
+  const lastSeg = segs.length > 0 ? segs[segs.length - 1] : null;
+
+  const depTimeRaw = leg.departure_time || (firstSeg && firstSeg.departure_time) || "";
+  const arrTimeRaw = leg.arrival_time || (lastSeg && lastSeg.arrival_time) || "";
+  if (!depTimeRaw || !arrTimeRaw) return "";
+
+  const depDateIso = leg.departure_date || (firstSeg && firstSeg.departure_date) || "";
+  let dayOffset = 0;
+
+  if (typeof leg.arrival_day_offset === "number") {
+    dayOffset = leg.arrival_day_offset;
+  } else if (leg.arrival_date && depDateIso) {
+    dayOffset = diffIsoDays(depDateIso, leg.arrival_date);
+  } else if (lastSeg) {
+    if (lastSeg.arrival_date && depDateIso) {
+      dayOffset = diffIsoDays(depDateIso, lastSeg.arrival_date);
+    } else {
+      const lastDepIso = lastSeg.departure_date || depDateIso;
+      dayOffset = diffIsoDays(depDateIso, lastDepIso);
+      const lastDepHrs = parseHmToHours(lastSeg.departure_time);
+      const lastArrHrs = parseHmToHours(lastSeg.arrival_time);
+      if (lastDepHrs !== null && lastArrHrs !== null && lastArrHrs < lastDepHrs) {
+        dayOffset += 1;
+      }
+    }
+  }
+
+  const offsetSuffix = dayOffset > 0 ? `+${dayOffset}` : dayOffset < 0 ? `${dayOffset}` : "";
+  return `${formatTime12h(depTimeRaw)} – ${formatTime12h(arrTimeRaw)}${offsetSuffix}`;
+}
+
+function formatLegSegmentsTooltip(leg) {
+  const segs = Array.isArray(leg && leg.segments) ? leg.segments : [];
+  if (segs.length === 0) return "";
+  const legDepIso = leg.departure_date || segs[0].departure_date || "";
+  return segs
+    .map((s) => {
+      const depStr = formatTime12h(s.departure_time);
+      const arrStr = formatTime12h(s.arrival_time);
+      const depOff = diffIsoDays(legDepIso, s.departure_date || legDepIso);
+      const sDepHrs = parseHmToHours(s.departure_time);
+      const sArrHrs = parseHmToHours(s.arrival_time);
+      const arrOff = s.arrival_date
+        ? diffIsoDays(legDepIso, s.arrival_date)
+        : depOff + (sDepHrs !== null && sArrHrs !== null && sArrHrs < sDepHrs ? 1 : 0);
+      const depSuf = depOff > 0 ? `+${depOff}` : depOff < 0 ? `${depOff}` : "";
+      const arrSuf = arrOff > 0 ? `+${arrOff}` : arrOff < 0 ? `${arrOff}` : "";
+      return `${s.origin} ${depStr}${depSuf} → ${s.destination} ${arrStr}${arrSuf} (${s.flight_number || s.airline})`;
+    })
+    .join(" · ");
+}
+
 function renderOptimizationResults(data) {
   const container = document.getElementById("resultsContainer");
   const allById = new Map();
@@ -2085,8 +2173,13 @@ function renderOptimizationResults(data) {
   const ticketsHtml = activeItin.tickets
     .map((t) => {
       const legsRows = t.legs
-        .map(
-          (l) => `
+        .map((l) => {
+          const timeRange = formatLegTimeRange(l);
+          const segTooltip = formatLegSegmentsTooltip(l);
+          const timeHtml = timeRange
+            ? `<strong class="leg-time-range"${segTooltip ? ` title="${escapeHtml(segTooltip)}"` : ""}>${escapeHtml(timeRange)}</strong> · `
+            : "";
+          return `
           <div class="ticket-leg-row">
             <div>
               <span class="badge-subtle" style="margin-left:0.3rem" title="Data source provider">${escapeHtml(l.provider === "pricing_engine" ? "Simulated estimate" : l.provider)}</span>
@@ -2095,13 +2188,13 @@ function renderOptimizationResults(data) {
               <span class="cabin-tag ${escapeHtml(l.cabin)}">${escapeHtml(formatCabinName(l.cabin))}</span>
             </div>
             <div>
-              ${escapeHtml(l.airline_name)} (${escapeHtml(l.flight_numbers.join(", "))}) · ${l.duration_hours}h ·
+              ${timeHtml}${escapeHtml(l.airline_name)} (${escapeHtml(l.flight_numbers.join(", "))}) · ${l.duration_hours}h ·
               ${l.stops_count === 0 ? "Nonstop" : `${l.stops_count} stop (${escapeHtml(l.layover_airports.join(","))}${l.layover_hours ? ` · ${Number(l.layover_hours).toFixed(1)}h layover` : ""})`}
               ${l.from_cache ? ' <span title="Loaded from SQLite cache">⚡</span>' : ""}
             </div>
           </div>
-        `
-        )
+        `;
+        })
         .join("");
 
       const gfUrl = getTicketGoogleFlightsUrl(t);

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+from backend.app.data.airports import get_airport
 
 
 class CabinClass(StrEnum):
@@ -195,11 +197,69 @@ class TripRequest(BaseModel):
         return self
 
 
+def parse_hm_hours(hm: str) -> float | None:
+    """Parse a 24-hour 'HH:MM' string into fractional hours since midnight using stdlib `datetime.time`."""
+    try:
+        parsed = time.fromisoformat(hm.strip()[:5])
+        return parsed.hour + parsed.minute / 60.0
+    except ValueError:
+        return None
+
+
+def parse_local_datetime(
+    raw: Any,
+    fallback_date: date,
+    fallback_hm: str = "09:00",
+) -> tuple[date, str, datetime | None]:
+    """Parse an airport-local date and 24h 'HH:MM' time from a `fast_flights` `SimpleDatetime`,
+    an ISO / SerpApi `'YYYY-MM-DD HH:MM'` string, or a `'HH:MM'` string.
+    """
+    if raw is not None:
+        d_tuple = getattr(raw, "date", None)
+        t_tuple = getattr(raw, "time", None)
+        if isinstance(d_tuple, (tuple, list)) and len(d_tuple) == 3 and all(isinstance(x, int) for x in d_tuple):
+            hh = int(t_tuple[0] or 0) if isinstance(t_tuple, (tuple, list)) and len(t_tuple) >= 1 else 0
+            mm = int(t_tuple[1] or 0) if isinstance(t_tuple, (tuple, list)) and len(t_tuple) >= 2 else 0
+            try:
+                dt = datetime(int(d_tuple[0]), int(d_tuple[1]), int(d_tuple[2]), hh, mm, tzinfo=UTC)
+                return dt.date(), dt.strftime("%H:%M"), dt
+            except ValueError:
+                pass
+        if isinstance(t_tuple, (tuple, list)) and len(t_tuple) >= 2:
+            hh = int(t_tuple[0] or 0)
+            mm = int(t_tuple[1] or 0)
+            hm = f"{hh:02d}:{mm:02d}"
+            return fallback_date, hm, None
+
+    if isinstance(raw, str) and raw.strip():
+        text = raw.strip()
+        try:
+            dt = datetime.fromisoformat(text)
+            return dt.date(), dt.strftime("%H:%M"), dt.replace(tzinfo=UTC)
+        except ValueError:
+            pass
+        try:
+            t_val = time.fromisoformat(text[:5])
+            return fallback_date, t_val.strftime("%H:%M"), None
+        except ValueError:
+            pass
+
+    return fallback_date, fallback_hm, None
+
+
+def offset_date_and_hm(base_date: date, total_hours_from_midnight: float, minute: int) -> tuple[date, str]:
+    """Return `(local_date, 'HH:MM')` given fractional hours elapsed since `base_date` 00:00."""
+    day_offset = int(total_hours_from_midnight // 24)
+    hour_of_day = int(total_hours_from_midnight % 24)
+    return base_date + timedelta(days=day_offset), f"{hour_of_day:02d}:{minute:02d}"
+
+
 class FlightSegment(BaseModel):
     origin: str
     destination: str
     departure_date: date
     departure_time: str = "09:30"
+    arrival_date: date | None = None
     arrival_time: str = "17:45"
     airline: str
     airline_name: str
@@ -217,6 +277,10 @@ class FlightLegOption(BaseModel):
     origin: str
     destination: str
     departure_date: date
+    departure_time: str = ""
+    arrival_date: date | None = None
+    arrival_time: str = ""
+    arrival_day_offset: int = 0
     cabin: ConcreteCabinClass
     airline: str
     airline_name: str
@@ -234,6 +298,48 @@ class FlightLegOption(BaseModel):
     is_lcc: bool = False
     provider: str = "pricing_engine"
     from_cache: bool = False
+
+    @model_validator(mode="after")
+    def populate_segment_and_leg_times(self) -> FlightLegOption:
+        for idx, seg in enumerate(self.segments):
+            if seg.arrival_date is not None:
+                continue
+            if idx + 1 < len(self.segments):
+                next_seg = self.segments[idx + 1]
+                arr_hm = parse_hm_hours(seg.arrival_time)
+                next_dep_hm = parse_hm_hours(next_seg.departure_time)
+                if arr_hm is not None and next_dep_hm is not None:
+                    per_stop_layover = self.layover_hours / max(1, self.stops_count)
+                    layover_days = max(0, round((per_stop_layover - (next_dep_hm - arr_hm)) / 24.0))
+                    seg.arrival_date = max(seg.departure_date, next_seg.departure_date - timedelta(days=layover_days))
+                else:
+                    seg.arrival_date = seg.departure_date
+            else:
+                dep_hm = parse_hm_hours(seg.departure_time)
+                arr_hm = parse_hm_hours(seg.arrival_time)
+                if dep_hm is not None and arr_hm is not None:
+                    orig_info = get_airport(seg.origin)
+                    dest_info = get_airport(seg.destination)
+                    if self.provider != "pricing_engine" and orig_info.has_coordinates and dest_info.has_coordinates:
+                        tz_diff = (dest_info.lon - orig_info.lon) / 15.0
+                        day_delta = round((dep_hm + seg.duration_hours + tz_diff - arr_hm) / 24.0)
+                    else:
+                        day_delta = 1 if arr_hm < dep_hm else int((dep_hm + seg.duration_hours) // 24)
+                    seg.arrival_date = seg.departure_date + timedelta(days=day_delta)
+                else:
+                    seg.arrival_date = seg.departure_date
+
+        if self.segments:
+            first_seg = self.segments[0]
+            last_seg = self.segments[-1]
+            if not self.departure_time:
+                self.departure_time = first_seg.departure_time
+            if self.arrival_date is None:
+                self.arrival_date = last_seg.arrival_date or self.departure_date
+            if not self.arrival_time:
+                self.arrival_time = last_seg.arrival_time
+            self.arrival_day_offset = (self.arrival_date - self.departure_date).days
+        return self
 
 
 class BookedTicket(BaseModel):

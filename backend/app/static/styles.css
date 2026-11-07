@@ -1595,6 +1595,12 @@ body {
   flex-wrap: wrap;
 }
 
+.leg-time-range {
+  color: #0f172a;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .booking-cmd {
   margin-top: 0.4rem;
   font-size: 0.75rem;

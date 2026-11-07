@@ -572,10 +572,13 @@ class CompositeFlightProvider(FlightSearchProvider):
                 register_discovered_airport(dep_code, str(getattr(from_ap, "name", "") or ""))
                 register_discovered_airport(arr_code, str(getattr(to_ap, "name", "") or ""))
                 dep_dt_obj = getattr(sf, "departure", None)
+                arr_dt_obj = getattr(sf, "arrival", None)
                 dep_parsed_dt = _extract_simple_datetime(dep_dt_obj)
+                arr_parsed_dt = _extract_simple_datetime(arr_dt_obj)
                 seg_dep_date = dep_parsed_dt.date() if dep_parsed_dt is not None else departure_date
+                seg_arr_date = arr_parsed_dt.date() if arr_parsed_dt is not None else None
                 dep_time_tuple = getattr(dep_dt_obj, "time", (9, 0))
-                arr_time_tuple = getattr(getattr(sf, "arrival", None), "time", (17, 0))
+                arr_time_tuple = getattr(arr_dt_obj, "time", (17, 0))
                 dep_hm = f"{int(dep_time_tuple[0]):02d}:{int(dep_time_tuple[1]):02d}"
                 arr_hm = f"{int(arr_time_tuple[0]):02d}:{int(arr_time_tuple[1]):02d}"
                 dur_min = float(getattr(sf, "duration", 60) or 60)
@@ -590,6 +593,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                         destination=arr_code,
                         departure_date=seg_dep_date,
                         departure_time=dep_hm,
+                        arrival_date=seg_arr_date,
                         arrival_time=arr_hm,
                         airline=carrier_code,
                         airline_name=primary_airline_name,
@@ -738,10 +742,15 @@ class CompositeFlightProvider(FlightSearchProvider):
                 dep_time_full = str(dep_info.get("time") or "09:00")
                 arr_time_full = str(arr_info.get("time") or "17:00")
                 dep_date_part = dep_time_full.split(" ", maxsplit=1)[0]
+                arr_date_part = arr_time_full.split(" ", maxsplit=1)[0]
                 try:
                     seg_dep_date = date.fromisoformat(dep_date_part)
                 except ValueError:
                     seg_dep_date = departure_date
+                try:
+                    seg_arr_date: date | None = date.fromisoformat(arr_date_part)
+                except ValueError:
+                    seg_arr_date = None
                 dep_hm = dep_time_full.rsplit(" ", maxsplit=1)[-1][:5]
                 arr_hm = arr_time_full.rsplit(" ", maxsplit=1)[-1][:5]
                 seg_dur_hrs = round(float(seg.get("duration") or 60.0) / 60.0, 2)
@@ -755,6 +764,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                         destination=arr_airport,
                         departure_date=seg_dep_date,
                         departure_time=dep_hm,
+                        arrival_date=seg_arr_date,
                         arrival_time=arr_hm,
                         airline=carrier_code,
                         airline_name=raw_airline_name,

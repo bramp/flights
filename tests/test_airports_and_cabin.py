@@ -27,6 +27,7 @@ from backend.app.models.schemas import (
     CabinPolicy,
     ConcreteCabinClass,
     ConcreteStopsMode,
+    FlightLegOption,
     StopsMode,
     StopsPolicy,
     TicketType,
@@ -270,7 +271,17 @@ def test_fast_flights_computes_exact_layovers_and_filters_long_layovers() -> Non
     assert len(parsed_long) == 1
     assert parsed_long[0].layover_hours == 28.75
     assert parsed_long[0].duration_hours == 43.75
+    assert parsed_long[0].segments[0].arrival_date == date(2026, 12, 12)
     assert parsed_long[0].segments[1].departure_date == date(2026, 12, 13)
+    assert parsed_long[0].segments[1].arrival_date == date(2026, 12, 14)
+
+    # Verify legacy cached payloads without arrival_date infer accurate segment arrival_dates
+    legacy_payload = parsed_long[0].model_dump(mode="json")
+    for seg_dict in legacy_payload["segments"]:
+        seg_dict["arrival_date"] = None
+    rehydrated = FlightLegOption.model_validate(legacy_payload)
+    assert rehydrated.segments[0].arrival_date == date(2026, 12, 12)
+    assert rehydrated.segments[1].arrival_date == date(2026, 12, 14)
 
     # 2. When both the 28.75h layover and the 3.25h layover exist, the 3.25h layover ranks first
     # and filter_options_by_stops filters out the 28.75h layover under the default 6.0h policy

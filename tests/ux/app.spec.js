@@ -18,6 +18,22 @@ function optimizationResponse(provider = "mock") {
     provider,
     airline_name: "Test Airways",
     flight_numbers: ["TA123"],
+    segments: [
+      {
+        origin: "SFO",
+        destination: "ATH",
+        departure_date: "2026-12-11",
+        departure_time: "18:35",
+        arrival_date: "2026-12-12",
+        arrival_time: "21:00",
+        airline: "TA",
+        airline_name: "Test Airways",
+        alliance: "Star Alliance",
+        flight_number: "TA123",
+        duration_hours: 12,
+        cabin: "business",
+      },
+    ],
     duration_hours: 12,
     stops_count: 0,
     layover_airports: [],
@@ -127,6 +143,7 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Ticket Strategy Comparison", exact: false })).toBeVisible();
   await expect(page.locator(".comparison-table tbody tr")).toHaveCount(2);
   await expect(page.locator(".price-big")).toHaveText("$1250");
+  await expect(page.locator(".ticket-list")).toContainText("6:35 PM – 9:00 PM+1");
   await expect(page.locator(".ticket-list")).toContainText("Test Airways (TA123)");
   await expect(page.locator(".leg-preview-list")).toContainText("Athens (ATH)");
   await expect(page.locator("#cacheStatusText")).toHaveText("Cache: 12 flights (3 hits / 2 fetched)");
