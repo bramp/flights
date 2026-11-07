@@ -19,6 +19,10 @@ class FlightSearchProvider(ABC):
     def is_simulation(self) -> bool:
         return False
 
+    def cache_scope(self) -> str:
+        """Identify provider settings that affect the candidates returned by a search."""
+        return f"{type(self).__module__}.{type(self).__qualname__}"
+
     @abstractmethod
     def search(self, query: LegSearch) -> list[FlightLegOption]:
         """Return candidate flight options for the allowed airports, date, and cabin."""
@@ -66,15 +70,16 @@ class CachedFlightProvider(FlightSearchProvider):
         cache: FlightCache,
         force_refresh: bool = False,
         progress_callback: ProgressCallback | None = None,
-        planned_query_keys: set[str] | None = None,
+        planned_queries: set[LegSearch] | None = None,
     ) -> None:
         self.delegate = delegate
         self.cache = cache
         self.force_refresh = force_refresh
         self.progress_callback = progress_callback
-        self.planned_query_keys: set[str] = set(planned_query_keys) if planned_query_keys else set()
-        self.completed_query_keys: set[str] = set()
+        self.planned_queries: set[LegSearch] = set(planned_queries) if planned_queries else set()
+        self.completed_queries: set[LegSearch] = set()
         self._run_results: dict[LegSearch, list[FlightLegOption]] = {}
+        self._provider_scope = delegate.cache_scope()
         self.schedule_index: int = 1
         self.schedules_total: int = 1
         self.current_schedule_route: str = ""
@@ -90,8 +95,8 @@ class CachedFlightProvider(FlightSearchProvider):
         return f"{orig_display} → {dest_display} ({query.departure_date.isoformat()} · {cabin_display})"
 
     def compute_progress_pct(self) -> int:
-        total_q = max(1, len(self.planned_query_keys))
-        done_q = min(total_q, len(self.completed_query_keys))
+        total_q = max(1, len(self.planned_queries))
+        done_q = min(total_q, len(self.completed_queries))
         q_ratio = done_q / total_q
         s_ratio = self.strategies_completed / max(1, self.strategies_total)
         pct = round((q_ratio * 0.75 + s_ratio * 0.25) * 95) + 3
@@ -106,8 +111,8 @@ class CachedFlightProvider(FlightSearchProvider):
     ) -> None:
         if self.progress_callback is None:
             return
-        total_q = max(len(self.planned_query_keys), len(self.completed_query_keys), 1)
-        done_q = len(self.completed_query_keys)
+        total_q = max(len(self.planned_queries), len(self.completed_queries), 1)
+        done_q = len(self.completed_queries)
         live_calls = self.cache.session_fast_flights_calls + self.cache.session_serpapi_calls
         payload: dict[str, Any] = {
             "phase": phase,
@@ -133,16 +138,17 @@ class CachedFlightProvider(FlightSearchProvider):
         if query in self._run_results:
             return list(self._run_results[query])
 
-        leg_key = self.cache.make_leg_key(query)
         query_label = self.format_query_label(query)
-        self.planned_query_keys.add(leg_key)
+        self.planned_queries.add(query)
         self.emit_progress(phase="query_start", current_query=query_label)
 
         hits_before = self.cache.session_hits
         if self.delegate.is_simulation():
             results = self.delegate.search(query)
         else:
-            cached = None if self.force_refresh else self.cache.get_leg_options(query)
+            cached = (
+                None if self.force_refresh else self.cache.get_leg_options(query, provider_scope=self._provider_scope)
+            )
             if cached is not None:
                 results = cached
             else:
@@ -150,10 +156,10 @@ class CachedFlightProvider(FlightSearchProvider):
                     self.cache.session_misses += 1
                 results = self.delegate.search(query)
                 if results:
-                    self.cache.store_leg_options(query, results)
+                    self.cache.store_leg_options(query, results, provider_scope=self._provider_scope)
 
         self._run_results[query] = list(results)
-        self.completed_query_keys.add(leg_key)
+        self.completed_queries.add(query)
         source = (
             "simulated"
             if self.delegate.is_simulation()

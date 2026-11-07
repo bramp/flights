@@ -38,16 +38,15 @@ __all__ = [
 ]
 
 
-def _collect_planned_query_keys(
+def _collect_planned_queries(
     schedules: list[CandidateSchedule],
     request: TripRequest,
-    cache: FlightCache,
-) -> set[str]:
-    """Pre-compute the distinct flight leg query keys planned across all candidate schedules.
-    Dynamic hub-split sub-queries are registered on-the-fly by `CachedFlightProvider.search_leg`
+) -> set[LegSearch]:
+    """Pre-compute the distinct flight leg queries planned across all candidate schedules.
+    Dynamic hub-split sub-queries are registered on-the-fly by `CachedFlightProvider.search`
     as corridor hubs are discovered from actual flight layovers.
     """
-    keys: set[str] = set()
+    queries: set[LegSearch] = set()
     for sched in schedules:
         if not sched.legs:
             continue
@@ -69,10 +68,10 @@ def _collect_planned_query_keys(
                 continue
             if len(clean_origs) == 1 and len(clean_dests) == 1 and clean_origs[0] == clean_dests[0]:
                 continue
-            keys.add(cache.make_leg_key(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, uniform_cabin)))
-            keys.add(cache.make_leg_key(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, leg_cabin)))
+            queries.add(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, uniform_cabin))
+            queries.add(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, leg_cabin))
 
-    return keys
+    return queries
 
 
 def optimize_trip(
@@ -110,20 +109,20 @@ def optimize_trip(
             "showing the closest feasible schedule within your trip window."
         )
 
-    planned_keys = _collect_planned_query_keys(schedules, request, cache)
+    planned_queries = _collect_planned_queries(schedules, request)
     cached_provider = CachedFlightProvider(
         delegate=raw_provider,
         cache=cache,
         force_refresh=request.force_refresh,
         progress_callback=progress_callback,
-        planned_query_keys=planned_keys,
+        planned_queries=planned_queries,
     )
     cached_provider.schedules_total = max(1, len(schedules))
     cached_provider.strategies_total = max(1, len(schedules) * 5)
 
     cached_provider.emit_progress(
         phase="init",
-        current_query=f"Generated {len(schedules)} candidate schedule(s) · {len(planned_keys)} flight queries planned",
+        current_query=f"Generated {len(schedules)} candidate schedule(s) · {len(planned_queries)} flight queries planned",
         progress_pct=3,
     )
 
@@ -214,7 +213,7 @@ def optimize_trip(
                     f"(shortest layover: {per_stop_layover:.1f}h)."
                 )
 
-    cached_provider.planned_query_keys = set(cached_provider.completed_query_keys)
+    cached_provider.planned_queries = set(cached_provider.completed_queries)
     cached_provider.emit_progress(
         phase="complete",
         current_query="Ranked Pareto-optimal itineraries & ticket partitions",

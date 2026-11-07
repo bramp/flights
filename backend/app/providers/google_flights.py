@@ -286,6 +286,10 @@ class CompositeFlightProvider(FlightSearchProvider):
     def is_simulation(self) -> bool:
         return self.mode == ProviderMode.OFFLINE
 
+    def cache_scope(self) -> str:
+        effective_layover = max(self.max_layover_hours, StopsPolicy().max_layover_hours)
+        return f"google-flights:{self.mode.value}:layover={effective_layover:g}"
+
     def configure_for_run(
         self,
         cache: FlightCache,

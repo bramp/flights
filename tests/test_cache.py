@@ -35,8 +35,8 @@ def test_leg_search_normalizes_codes_without_changing_airport_priority() -> None
     assert query.origins == ("SFO", "OAK")
     assert query.destinations == ("LHR", "LGW")
     assert query == LegSearch(("SFO", "OAK"), ("LHR", "LGW"), departure, ConcreteCabinClass.BUSINESS)
-    assert FlightCache.make_leg_key(query) != FlightCache.make_leg_key(
-        LegSearch(("OAK", "SFO"), ("LHR", "LGW"), departure, ConcreteCabinClass.BUSINESS)
+    assert FlightCache.make_leg_key(query, "test") != FlightCache.make_leg_key(
+        LegSearch(("OAK", "SFO"), ("LHR", "LGW"), departure, ConcreteCabinClass.BUSINESS), "test"
     )
     with pytest.raises(ValueError, match="origin and destination"):
         LegSearch(("",), ("LHR",), departure, ConcreteCabinClass.BUSINESS)
@@ -113,14 +113,44 @@ def test_expired_search_is_not_recreated_from_granular_flights(tmp_path: Path) -
     cache = FlightCache(tmp_path / "expired.db", ttl_seconds=60)
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    options = MockLiveProvider().search(query)
-    cache.store_leg_options(query, options)
+    delegate = MockLiveProvider()
+    options = delegate.search(query)
+    cache.store_leg_options(query, options, provider_scope=delegate.cache_scope())
     with cache._connect() as conn:
         conn.execute("UPDATE leg_search_cache SET updated_at = ?", (time.time() - 61,))
 
-    assert cache.get_leg_options(query) is None
+    assert cache.get_leg_options(query, provider_scope=delegate.cache_scope()) is None
     assert cache.get_stats().cache_misses == 1
     assert cache.get_stats().total_cached_flights_in_db == len(options)
+
+
+def test_persistent_search_cache_separates_provider_mode_and_layover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = FlightCache(tmp_path / "provider-scopes.db")
+    query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    option = MockLiveProvider().search(query)[0]
+    fast = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, rate_limit_seconds=0)
+    serp = CompositeFlightProvider(mode=ProviderMode.SERPAPI, rate_limit_seconds=0)
+    serp.serpapi_key = "test-key"
+    attempts: list[str] = []
+
+    def fast_search(*_args: object) -> list[FlightLegOption]:
+        attempts.append("fast")
+        return [option]
+
+    def serp_search(*_args: object) -> list[FlightLegOption]:
+        attempts.append("serp")
+        return [option.model_copy(update={"provider": "serpapi", "one_way_base_fare_usd": 123.0})]
+
+    monkeypatch.setattr(fast, "_search_fast_flights", fast_search)
+    monkeypatch.setattr(serp, "_search_serpapi_google_flights", serp_search)
+    assert CachedFlightProvider(fast, cache).search(query)[0].provider == "fast_flights"
+    assert CachedFlightProvider(fast, cache).search(query)[0].from_cache
+    assert CachedFlightProvider(serp, cache).search(query)[0].provider == "serpapi"
+    fast.max_layover_hours = 10.0
+    assert not CachedFlightProvider(fast, cache).search(query)[0].from_cache
+    assert attempts == ["fast", "serp", "fast"]
 
 
 @pytest.mark.parametrize("force_refresh", [False, True])
@@ -218,8 +248,9 @@ def test_simulation_bypasses_real_cache_and_never_persists(tmp_path: Path, monke
     cache = FlightCache(tmp_path / "simulation.db")
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    live = MockLiveProvider().search(query)
-    cache.store_leg_options(query, live)
+    live_provider = MockLiveProvider()
+    live = live_provider.search(query)
+    cache.store_leg_options(query, live, provider_scope=live_provider.cache_scope())
     before = cache.get_stats()
     for delegate in (RealisticPricingProvider(), CompositeFlightProvider(mode=ProviderMode.OFFLINE)):
         provider = CachedFlightProvider(delegate, cache)
@@ -240,21 +271,23 @@ def test_cache_rejects_simulated_and_mixed_writes(tmp_path: Path) -> None:
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
     fake = RealisticPricingProvider().search(query)
-    live = MockLiveProvider().search(query)
+    live_provider = MockLiveProvider()
+    live = live_provider.search(query)
     for options in (fake, fake + live):
-        cache.store_leg_options(query, options)
+        cache.store_leg_options(query, options, provider_scope=live_provider.cache_scope())
     cache.store_ticket_quote("simulated", "open_jaw", {"providers": ["pricing_engine"], "base_fare_usd": 100})
     assert cache.get_stats().total_cached_flights_in_db == 0
     assert cache.get_stats().total_cached_quotes_in_db == 0
-    assert cache.get_leg_options(query) is None
+    assert cache.get_leg_options(query, provider_scope=live_provider.cache_scope()) is None
 
 
 def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "legacy.db")
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    live = MockLiveProvider().search(query)
-    cache.store_leg_options(query, live)
+    live_provider = MockLiveProvider()
+    live = live_provider.search(query)
+    cache.store_leg_options(query, live, provider_scope=live_provider.cache_scope())
     cache.record_provider_call("serpapi")
     cache.store_ticket_quote("live-quote", "open_jaw", {"providers": ["fast_flights"], "base_fare_usd": 200})
     with cache._connect() as conn:
@@ -271,7 +304,7 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
             ("legacy-quote", "open_jaw", json.dumps({"base_fare_usd": 100}), time.time()),
         )
     cache = FlightCache(cache.db_path)
-    results = cache.get_leg_options(query)
+    results = cache.get_leg_options(query, provider_scope=live_provider.cache_scope())
     assert results is None
     with cache._connect() as conn:
         rows = conn.execute("SELECT payload_json FROM granular_flights").fetchall()

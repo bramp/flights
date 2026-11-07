@@ -145,13 +145,13 @@ class FlightCache:
             )
 
     @staticmethod
-    def make_leg_key(query: LegSearch) -> str:
+    def make_leg_key(query: LegSearch, provider_scope: str) -> str:
         origins = ",".join(query.origins)
         destinations = ",".join(query.destinations)
-        return f"{origins}:{destinations}:{query.departure_date.isoformat()}:{query.cabin.value}"
+        return f"search-v2:{provider_scope}:{origins}:{destinations}:{query.departure_date.isoformat()}:{query.cabin.value}"
 
-    def get_leg_options(self, query: LegSearch) -> list[FlightLegOption] | None:
-        key = self.make_leg_key(query)
+    def get_leg_options(self, query: LegSearch, *, provider_scope: str) -> list[FlightLegOption] | None:
+        key = self.make_leg_key(query, provider_scope)
         now = time.time()
         with self._connect() as conn:
             row = conn.execute(
@@ -171,10 +171,10 @@ class FlightCache:
         self.session_misses += 1
         return None
 
-    def store_leg_options(self, query: LegSearch, options: list[FlightLegOption]) -> None:
+    def store_leg_options(self, query: LegSearch, options: list[FlightLegOption], *, provider_scope: str) -> None:
         if not options or any(option.provider == "pricing_engine" for option in options):
             return
-        key = self.make_leg_key(query)
+        key = self.make_leg_key(query, provider_scope)
         now = time.time()
         serialized_list = json.dumps([opt.model_dump(mode="json") for opt in options])
         with self._connect() as conn:
