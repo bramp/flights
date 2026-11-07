@@ -13,6 +13,14 @@ from backend.app.models.schemas import (
     StopsPolicy,
 )
 
+__all__ = [
+    "CABIN_RANK",
+    "filter_options_by_stops",
+    "highest_cabin",
+    "resolve_leg_cabin",
+    "resolve_leg_max_stops",
+]
+
 CABIN_RANK: dict[ConcreteCabinClass, int] = {
     ConcreteCabinClass.ECONOMY: 1,
     ConcreteCabinClass.PREMIUM_ECONOMY: 2,

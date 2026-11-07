@@ -48,6 +48,7 @@ function optimizationResponse(provider = "mock") {
       baggage_fees_usd: 50,
       pricing_note: "Includes checked baggage.",
       booking_query_summary: "Book SFO to ATH with Test Airways",
+      google_flights_url: "https://www.google.com/travel/flights/search?tfs=test&hl=en&curr=USD",
     }],
     total_price_usd: 1250,
     total_base_fare_usd: 1200,
@@ -130,6 +131,14 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
   await expect(page.locator(".leg-preview-list")).toContainText("Athens (ATH)");
   await expect(page.locator("#cacheStatusText")).toHaveText("Cache: 12 flights (3 hits / 2 fetched)");
   await expect(page.locator("#serpQuotaText")).toHaveText("SerpApi: 7 / 250 (+1 run)");
+  await expect(page.locator(".booking-query-link").first()).toHaveAttribute(
+    "href",
+    "https://www.google.com/travel/flights/search?tfs=test&hl=en&curr=USD"
+  );
+  await expect(page.locator(".btn-gf-book").first()).toHaveAttribute(
+    "href",
+    "https://www.google.com/travel/flights/search?tfs=test&hl=en&curr=USD"
+  );
   await expect(page.getByText("Optimization Error", { exact: true })).toHaveCount(0);
 });
 
@@ -225,6 +234,35 @@ test("selecting a strategy updates the price and ticket breakdown", async ({ pag
   await expect(page.locator(".price-big")).toHaveText("$1050");
   await expect(page.locator(".ticket-list")).toContainText("Separate outbound booking");
   await expect(page.locator("tr.active-row")).toContainText("Separate One-Way Tickets");
+});
+
+test("booking link falls back to Google Flights query URL when google_flights_url is absent", async ({ page }) => {
+  const fallbackResp = optimizationResponse();
+  delete fallbackResp.recommended.tickets[0].google_flights_url;
+  delete fallbackResp.alternative?.tickets?.[0]?.google_flights_url;
+  fallbackResp.strategy_comparison[1].tickets[0] = {
+    ...fallbackResp.strategy_comparison[1].tickets[0],
+    google_flights_url: "",
+    cabin_summary: "Business",
+    legs: [
+      { ...fallbackResp.recommended.legs[0], origin: "sfo", destination: "ath" },
+      { ...fallbackResp.recommended.legs[0], origin: "lhr", destination: "sfo", departure_date: "2026-12-25" },
+    ],
+  };
+  await page.route("**/api/optimize", (route) => route.fulfill({ json: fallbackResp }));
+  await page.locator("#optimizeBtn").click();
+  await expect(page.locator(".booking-query-link").first()).toHaveAttribute(
+    "href",
+    /https:\/\/www\.google\.com\/travel\/flights\?q=Flights%20from%20SFO%20to%20ATH%20on%202026-12-11%20one%20way%20Business/
+  );
+  await expect(page.locator(".btn-gf-book").first()).toHaveAttribute("target", "_blank");
+  await expect(page.locator(".btn-gf-book").first()).toHaveAttribute("rel", "noopener noreferrer");
+
+  await page.getByRole("row").filter({ hasText: "Separate One-Way Tickets" }).click();
+  await expect(page.locator(".booking-query-link").first()).toHaveAttribute(
+    "href",
+    /https:\/\/www\.google\.com\/travel\/flights\?q=Multi-city%20flights%20SFO%20to%20ATH%20on%202026-12-11%2C%20LHR%20to%20SFO%20on%202026-12-25%20Business/
+  );
 });
 
 for (const failure of ["http", "network"]) {

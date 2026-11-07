@@ -6,11 +6,12 @@ import os
 import time
 from collections.abc import Callable
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
 from fast_flights import FlightQuery, Passengers, create_query, get_flights
+from fast_flights.types import SeatType, TripType
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.data.airports import (
@@ -18,15 +19,77 @@ from backend.app.data.airports import (
     register_discovered_airport,
 )
 from backend.app.models.schemas import (
+    BaggageConfig,
     ConcreteCabinClass,
     FlightLegOption,
     FlightSegment,
     ProviderMode,
+    TicketType,
 )
 from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.pricing_engine import CARRIERS, RealisticPricingProvider
 
 load_dotenv()
+
+_SEAT_TYPE_MAP: dict[ConcreteCabinClass, SeatType] = {
+    ConcreteCabinClass.ECONOMY: "economy",
+    ConcreteCabinClass.PREMIUM_ECONOMY: "premium-economy",
+    ConcreteCabinClass.BUSINESS: "business",
+    ConcreteCabinClass.FIRST: "first",
+}
+_CABIN_ORDER: dict[ConcreteCabinClass, int] = {
+    ConcreteCabinClass.ECONOMY: 1,
+    ConcreteCabinClass.PREMIUM_ECONOMY: 2,
+    ConcreteCabinClass.BUSINESS: 3,
+    ConcreteCabinClass.FIRST: 4,
+}
+
+
+def build_google_flights_url(
+    legs: list[FlightLegOption],
+    ticket_type: TicketType,
+    baggage: BaggageConfig | None = None,
+) -> str:
+    """Build a direct Google Flights search URL (`?tfs=...`) pre-populated with all slices,
+    dates, cabin class, and baggage for a bookable ticket.
+    """
+    if not legs:
+        return "https://www.google.com/travel/flights"
+
+    flight_queries = [
+        FlightQuery(
+            date=leg.departure_date.isoformat(),
+            from_airport=leg.origin.upper(),
+            to_airport=leg.destination.upper(),
+        )
+        for leg in legs
+    ]
+
+    is_exact_round_trip = (
+        ticket_type == TicketType.ROUND_TRIP
+        and len(legs) == 2
+        and legs[0].origin.upper() == legs[1].destination.upper()
+        and legs[0].destination.upper() == legs[1].origin.upper()
+    )
+    trip_str: Literal["one-way", "round-trip", "multi-city"] = (
+        "one-way" if len(legs) == 1 else ("round-trip" if is_exact_round_trip else "multi-city")
+    )
+    top_cabin = max((leg.cabin for leg in legs), key=lambda c: _CABIN_ORDER[c], default=ConcreteCabinClass.ECONOMY)
+    seat_str: SeatType = _SEAT_TYPE_MAP[top_cabin]
+    trip_arg: TripType = trip_str
+
+    q = create_query(
+        flights=flight_queries,
+        seat=seat_str,
+        trip=trip_arg,
+        passengers=Passengers(adults=1),
+        language="en",
+        currency="USD",
+        carry_on_bags=1 if (baggage and baggage.include_carry_on) else 0,
+        checked_bags=baggage.checked_bags if baggage else 0,
+    )
+    return q.url()
+
 
 # Lookup table mapping 2-letter IATA airline code or airline name to (alliance, is_lcc, bag_fee_usd).
 # Used ONLY to enrich live Google Flights responses when alliance metadata isn't in the payload.

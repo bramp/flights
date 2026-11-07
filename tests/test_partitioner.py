@@ -115,6 +115,11 @@ def test_partitioner_mixed_cabin_open_jaw_beats_single_ticket_and_all_one_ways(
     assert hub_itin.stop_visits[0].arrival_airport in ("LHR", "LGW")
     assert hub_itin.stop_visits[0].arrival_airport not in hub_itin.self_transfer_hubs
 
+    # Every booked ticket across all strategies must have a pre-populated Google Flights URL
+    for itin in resp.strategy_comparison:
+        for ticket in itin.tickets:
+            assert ticket.google_flights_url.startswith("https://www.google.com/travel/flights/search?tfs=")
+
 
 def test_google_flights_payload_parser() -> None:
     sample_payload = {

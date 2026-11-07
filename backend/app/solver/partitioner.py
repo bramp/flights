@@ -15,6 +15,7 @@ from backend.app.models.schemas import (
     TripRequest,
 )
 from backend.app.providers.base import FlightSearchProvider
+from backend.app.providers.google_flights import build_google_flights_url
 from backend.app.solver.cabin import (
     filter_options_by_stops,
     highest_cabin,
@@ -148,6 +149,15 @@ def _assemble_itinerary(
     min_buffer_hours: float | None = None,
     explanation_bullets: list[str] | None = None,
 ) -> EvaluatedItinerary:
+    tickets = [
+        t
+        if t.google_flights_url
+        else t.model_copy(
+            update={"google_flights_url": build_google_flights_url(t.legs, t.ticket_type, request.baggage)}
+        )
+        for t in tickets
+    ]
+
     total_base = round(sum(t.base_fare_usd for t in tickets), 2)
     total_bags = round(sum(t.baggage_fees_usd for t in tickets), 2)
     total_price = round(total_base + total_bags, 2)

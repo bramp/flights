@@ -1998,6 +1998,39 @@ function updateCacheStatusUI(stats) {
   }
 }
 
+function getTicketGoogleFlightsUrl(ticket) {
+  if (ticket && ticket.google_flights_url && /^https?:\/\//i.test(ticket.google_flights_url)) {
+    return ticket.google_flights_url;
+  }
+  const legs = (ticket && ticket.legs) || [];
+  const cabinLabel =
+    (ticket && ticket.cabin_summary) || (legs[0] ? formatCabinName(legs[0].cabin) : "Economy");
+  if (legs.length === 1) {
+    const l = legs[0];
+    const q = `Flights from ${String(l.origin).toUpperCase()} to ${String(l.destination).toUpperCase()} on ${l.departure_date} one way ${formatCabinName(l.cabin)}`;
+    return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}&hl=en&curr=USD`;
+  }
+  if (
+    legs.length === 2 &&
+    String(legs[0].origin).toUpperCase() === String(legs[1].destination).toUpperCase() &&
+    String(legs[0].destination).toUpperCase() === String(legs[1].origin).toUpperCase()
+  ) {
+    const q = `Flights from ${String(legs[0].origin).toUpperCase()} to ${String(legs[0].destination).toUpperCase()} on ${legs[0].departure_date} return ${legs[1].departure_date} ${cabinLabel}`;
+    return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}&hl=en&curr=USD`;
+  }
+  if (legs.length >= 2) {
+    const slices = legs
+      .map(
+        (l) =>
+          `${String(l.origin).toUpperCase()} to ${String(l.destination).toUpperCase()} on ${l.departure_date}`
+      )
+      .join(", ");
+    const q = `Multi-city flights ${slices} ${cabinLabel}`.trim();
+    return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}&hl=en&curr=USD`;
+  }
+  return "https://www.google.com/travel/flights?hl=en&curr=USD";
+}
+
 function renderOptimizationResults(data) {
   const container = document.getElementById("resultsContainer");
   const allById = new Map();
@@ -2066,6 +2099,7 @@ function renderOptimizationResults(data) {
         )
         .join("");
 
+      const gfUrl = getTicketGoogleFlightsUrl(t);
       return `
         <div class="ticket-card">
           <div class="ticket-card-header">
@@ -2080,7 +2114,12 @@ function renderOptimizationResults(data) {
           </div>
           <div style="font-size:0.78rem; color:#475569; margin-bottom:0.35rem;">${escapeHtml(t.pricing_note)}</div>
           ${legsRows}
-          <div class="booking-cmd">📋 <strong>How to book:</strong> ${escapeHtml(t.booking_query_summary)}</div>
+          <div class="booking-cmd">
+            <span>📋 <strong>How to book:</strong> <a href="${escapeHtml(gfUrl)}" target="_blank" rel="noopener noreferrer" class="booking-query-link">${escapeHtml(t.booking_query_summary)}</a></span>
+            <a href="${escapeHtml(gfUrl)}" target="_blank" rel="noopener noreferrer" class="btn-gf-book">
+              ✈️ Open in Google Flights ↗
+            </a>
+          </div>
         </div>
       `;
     })

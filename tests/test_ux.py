@@ -74,6 +74,17 @@ def test_ux_end_to_end_optimization_and_interactions(page: Page, live_server_url
     expect(page.locator(".itinerary-hero")).to_be_visible()
     expect(page.locator(".ticket-card").first).to_be_visible()
 
+    # Verify direct Google Flights booking links are rendered with target="_blank" and valid ?tfs= URLs
+    first_booking_link = page.locator(".booking-query-link").first
+    first_gf_btn = page.locator(".btn-gf-book").first
+    expect(first_booking_link).to_be_visible()
+    expect(first_gf_btn).to_be_visible()
+    expect(first_booking_link).to_have_attribute("target", "_blank")
+    expect(first_gf_btn).to_have_attribute("target", "_blank")
+    href = first_booking_link.get_attribute("href") or ""
+    assert href.startswith("https://www.google.com/travel/flights/search?tfs=")
+    assert first_gf_btn.get_attribute("href") == href
+
     # Ensure no "Cannot access 'el' before initialization" or any other error card appeared
     expect(page.locator("#resultsContainer")).not_to_contain_text("Optimization Error")
     assert page_errors == []

@@ -1600,6 +1600,40 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
   background: var(--surface-alt);
-  padding: 0.35rem 0.55rem;
-  border-radius: 4px;
+  padding: 0.4rem 0.65rem;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.booking-query-link {
+  color: var(--primary);
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.booking-query-link:hover {
+  color: var(--primary-hover);
+}
+
+.btn-gf-book {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  background: var(--primary);
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+
+.btn-gf-book:hover {
+  background: var(--primary-hover);
 }

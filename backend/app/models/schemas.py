@@ -245,6 +245,7 @@ class BookedTicket(BaseModel):
     total_ticket_usd: float
     pricing_note: str
     booking_query_summary: str
+    google_flights_url: str = ""
 
 
 class ScheduledStopVisit(BaseModel):

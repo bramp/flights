@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from base64 import b64decode
 from datetime import date
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fast_flights.pb.flights_pb2 import Info, Seat, Trip
 
 from backend.app.data.airports import (
     AIRPORTS,
@@ -19,14 +22,19 @@ from backend.app.data.airports import (
     suggest_airports,
 )
 from backend.app.models.schemas import (
+    BaggageConfig,
     CabinClass,
     CabinPolicy,
     ConcreteCabinClass,
     ConcreteStopsMode,
     StopsMode,
     StopsPolicy,
+    TicketType,
 )
-from backend.app.providers.google_flights import CompositeFlightProvider
+from backend.app.providers.google_flights import (
+    CompositeFlightProvider,
+    build_google_flights_url,
+)
 from backend.app.providers.pricing_engine import RealisticPricingProvider
 from backend.app.solver.cabin import (
     filter_options_by_stops,
@@ -110,6 +118,70 @@ def test_resolve_leg_cabin_auto_and_explicit() -> None:
 def test_highest_cabin_ranking() -> None:
     assert highest_cabin([ConcreteCabinClass.ECONOMY, ConcreteCabinClass.BUSINESS]) == ConcreteCabinClass.BUSINESS
     assert highest_cabin([ConcreteCabinClass.PREMIUM_ECONOMY, ConcreteCabinClass.FIRST]) == ConcreteCabinClass.FIRST
+
+
+def _decode_google_flights_tfs(url: str) -> Info:
+    parsed = urlparse(url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "www.google.com"
+    assert parsed.path == "/travel/flights/search"
+    qs = parse_qs(parsed.query)
+    assert qs.get("hl") == ["en"]
+    assert qs.get("curr") == ["USD"]
+    tfs_b64 = qs["tfs"][0]
+    info = Info()
+    info.ParseFromString(b64decode(tfs_b64))
+    return info
+
+
+def test_build_google_flights_url_encodes_slices_trip_type_cabin_and_baggage() -> None:
+    assert build_google_flights_url([], TicketType.ONE_WAY) == "https://www.google.com/travel/flights"
+
+    prov = RealisticPricingProvider()
+    sfo_lhr = prov.search_leg("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)[0]
+    lhr_sfo = prov.search_leg("LHR", "SFO", date(2026, 11, 20), ConcreteCabinClass.BUSINESS)[0]
+    cdg_sfo = prov.search_leg("CDG", "SFO", date(2026, 11, 20), ConcreteCabinClass.ECONOMY)[0]
+    lhr_cdg = prov.search_leg("LHR", "CDG", date(2026, 11, 15), ConcreteCabinClass.ECONOMY)[0]
+
+    bags = BaggageConfig(include_carry_on=True, checked_bags=2)
+
+    # 1. Single-slice One-Way
+    ow_url = build_google_flights_url([lhr_cdg], TicketType.ONE_WAY, bags)
+    ow_info = _decode_google_flights_tfs(ow_url)
+    assert ow_info.trip == Trip.ONE_WAY
+    assert ow_info.seat == Seat.ECONOMY
+    assert len(ow_info.data) == 1
+    assert ow_info.data[0].from_airport.airport == "LHR"
+    assert ow_info.data[0].to_airport.airport == "CDG"
+    assert ow_info.data[0].date == "2026-11-15"
+    assert ow_info.baggage.carry_on_bags == 1
+    assert ow_info.baggage.checked_bags == 2
+
+    # 2. Exact 2-slice symmetric Round-Trip
+    rt_url = build_google_flights_url([sfo_lhr, lhr_sfo], TicketType.ROUND_TRIP, bags)
+    rt_info = _decode_google_flights_tfs(rt_url)
+    assert rt_info.trip == Trip.ROUND_TRIP
+    assert rt_info.seat == Seat.BUSINESS
+    assert [(d.from_airport.airport, d.to_airport.airport, d.date) for d in rt_info.data] == [
+        ("SFO", "LHR", "2026-11-10"),
+        ("LHR", "SFO", "2026-11-20"),
+    ]
+
+    # 3. 2-slice Open-Jaw (uses MULTI_CITY in Google Flights protobuf so both airport pairs are preserved)
+    oj_url = build_google_flights_url([sfo_lhr, cdg_sfo], TicketType.OPEN_JAW)
+    oj_info = _decode_google_flights_tfs(oj_url)
+    assert oj_info.trip == Trip.MULTI_CITY
+    assert oj_info.seat == Seat.BUSINESS  # highest cabin across slices
+    assert [(d.from_airport.airport, d.to_airport.airport) for d in oj_info.data] == [
+        ("SFO", "LHR"),
+        ("CDG", "SFO"),
+    ]
+
+    # 4. 3-slice Multi-City
+    mc_url = build_google_flights_url([sfo_lhr, lhr_cdg, cdg_sfo], TicketType.MULTI_CITY, bags)
+    mc_info = _decode_google_flights_tfs(mc_url)
+    assert mc_info.trip == Trip.MULTI_CITY
+    assert len(mc_info.data) == 3
 
 
 def test_resolve_leg_max_stops_and_filtering() -> None:
