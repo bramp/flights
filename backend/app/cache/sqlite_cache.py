@@ -8,6 +8,7 @@ import time
 from datetime import date
 from pathlib import Path
 
+from backend.app.data.airports import record_observed_duration
 from backend.app.models.schemas import (
     CacheStats,
     ConcreteCabinClass,
@@ -173,6 +174,8 @@ class FlightCache:
                 options = [FlightLegOption.model_validate(item) for item in raw_list]
                 for opt in options:
                     opt.from_cache = True
+                    for seg in opt.segments:
+                        record_observed_duration(seg.origin, seg.destination, seg.duration_hours)
                 return options
 
             # Fallback: check granular_flights table
@@ -190,6 +193,8 @@ class FlightCache:
                 options = [FlightLegOption.model_validate(json.loads(r["payload_json"])) for r in valid_rows]
                 for opt in options:
                     opt.from_cache = True
+                    for seg in opt.segments:
+                        record_observed_duration(seg.origin, seg.destination, seg.duration_hours)
                 return options
 
         self.session_misses += 1

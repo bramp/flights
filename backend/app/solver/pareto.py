@@ -53,10 +53,11 @@ def is_dominated(candidate: EvaluatedItinerary, other: EvaluatedItinerary) -> bo
 
 def extract_pareto_frontier(itineraries: list[EvaluatedItinerary]) -> list[EvaluatedItinerary]:
     """Return non-dominated itineraries sorted by effective_score."""
-    frontier: list[EvaluatedItinerary] = []
-    for cand in itineraries:
-        if not any(is_dominated(cand, other) for other in itineraries if other.itinerary_id != cand.itinerary_id):
-            frontier.append(cand)
+    frontier = [
+        cand
+        for cand in itineraries
+        if not any(is_dominated(cand, other) for other in itineraries if other.itinerary_id != cand.itinerary_id)
+    ]
     frontier.sort(key=lambda i: i.effective_score)
     return frontier
 

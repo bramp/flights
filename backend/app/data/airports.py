@@ -14,12 +14,13 @@ class AirportInfo:
     name: str
     city: str
     country: str
-    region: str  # NA, EU, ASIA, ME, OC, SA
+    region: str  # NA, EU, ASIA, ME, OC, SA, INTL
     lat: float
     lon: float
     metro_code: str
     is_major_hub: bool = False
     nearby_codes: tuple[str, ...] = ()
+    has_coordinates: bool = True
 
 
 def _load_airports() -> dict[str, AirportInfo]:
@@ -36,146 +37,122 @@ def _load_airports() -> dict[str, AirportInfo]:
 
 AIRPORTS: dict[str, AirportInfo] = _load_airports()
 
+# Dynamically populated from live Google Flights search responses and cached flight segments
+DISCOVERED_AIRPORTS: dict[str, AirportInfo] = {}
+OBSERVED_PAIR_HOURS: dict[tuple[str, str], float] = {}
 
-COUNTRY_NAMES: dict[str, str] = {
-    "US": "United States",
-    "CA": "Canada",
-    "GB": "United Kingdom",
-    "FR": "France",
-    "NL": "Netherlands",
-    "BE": "Belgium",
-    "DE": "Germany",
-    "CH": "Switzerland",
-    "AT": "Austria",
-    "SK": "Slovakia",
-    "CZ": "Czechia",
-    "HU": "Hungary",
-    "IT": "Italy",
-    "ES": "Spain",
-    "PT": "Portugal",
-    "GR": "Greece",
-    "DK": "Denmark",
-    "SE": "Sweden",
-    "FI": "Finland",
-    "IE": "Ireland",
-    "TR": "Turkey",
-    "AE": "United Arab Emirates",
-    "QA": "Qatar",
-    "JP": "Japan",
-    "KR": "South Korea",
-    "TW": "Taiwan",
-    "HK": "Hong Kong",
-    "MO": "Macau",
-    "SG": "Singapore",
-    "MY": "Malaysia",
-    "TH": "Thailand",
-    "PH": "Philippines",
-    "IN": "India",
-    "AU": "Australia",
-    "NZ": "New Zealand",
-}
 
-CITY_DISTANCE_MI: dict[str, int] = {
-    "SFO": 13,
-    "OAK": 12,
-    "SJC": 34,
-    "LAX": 11,
-    "BUR": 12,
-    "SNA": 35,
-    "ONT": 38,
-    "JFK": 15,
-    "EWR": 11,
-    "LGA": 8,
-    "LHR": 14,
-    "STN": 30,
-    "LGW": 25,
-    "LTN": 27,
-    "LCY": 7,
-    "SEN": 35,
-    "CDG": 16,
-    "ORY": 9,
-    "BVA": 43,
-    "FCO": 16,
-    "CIA": 9,
-    "MXP": 25,
-    "LIN": 5,
-    "BGY": 28,
-    "AMS": 9,
-    "RTM": 35,
-    "EIN": 66,
-    "ATH": 12,
-    "HND": 9,
-    "NRT": 37,
-    "KIX": 24,
-    "ITM": 9,
-    "ICN": 30,
-    "GMP": 10,
-    "TPE": 19,
-    "TSA": 3,
-    "BKK": 16,
-    "DMK": 13,
-}
+def _build_metro_groups(airports: dict[str, AirportInfo]) -> dict[str, dict[str, object]]:
+    by_metro: dict[str, list[AirportInfo]] = {}
+    for info in airports.values():
+        by_metro.setdefault(info.metro_code, []).append(info)
+    groups: dict[str, dict[str, object]] = {}
+    for m_code, members in by_metro.items():
+        if len(members) < 2 and not members[0].is_major_hub:
+            continue
+        primary = next((m for m in members if m.code == m_code), None) or next(
+            (m for m in members if m.is_major_hub), members[0]
+        )
+        label = primary.city.split("/")[0].strip()
+        groups[label] = {
+            "codes": [m.code for m in members],
+            "primary": primary.code,
+            "subtitle": f"{label} ({primary.country})",
+        }
+    return groups
 
-METRO_GROUPS: dict[str, dict[str, object]] = {
-    "San Francisco": {"codes": ["SFO", "OAK", "SJC"], "primary": "SFO", "subtitle": "Bay Area, United States"},
-    "Los Angeles": {
-        "codes": ["LAX", "BUR", "SNA", "ONT"],
-        "primary": "LAX",
-        "subtitle": "Southern California, United States",
-    },
-    "New York": {"codes": ["JFK", "EWR", "LGA"], "primary": "JFK", "subtitle": "New York Metro, United States"},
-    "Washington D.C.": {"codes": ["IAD", "DCA", "BWI"], "primary": "IAD", "subtitle": "Capital Region, United States"},
-    "Chicago": {"codes": ["ORD", "MDW"], "primary": "ORD", "subtitle": "Illinois, United States"},
-    "Miami": {"codes": ["MIA", "FLL"], "primary": "MIA", "subtitle": "South Florida, United States"},
-    "London": {"codes": ["LHR", "STN", "LGW", "LTN", "LCY", "SEN"], "primary": "LHR", "subtitle": "Capital of England"},
-    "Paris": {"codes": ["CDG", "ORY", "BVA"], "primary": "CDG", "subtitle": "Capital of France"},
-    "Rome": {"codes": ["FCO", "CIA"], "primary": "FCO", "subtitle": "Capital of Italy"},
-    "Milan": {"codes": ["MXP", "LIN", "BGY"], "primary": "MXP", "subtitle": "Lombardy, Italy"},
-    "Amsterdam": {"codes": ["AMS", "RTM", "EIN"], "primary": "AMS", "subtitle": "Capital of the Netherlands"},
-    "Brussels": {"codes": ["BRU", "CRL"], "primary": "BRU", "subtitle": "Capital of Belgium"},
-    "Frankfurt": {"codes": ["FRA", "HHN"], "primary": "FRA", "subtitle": "Hesse, Germany"},
-    "Athens": {"codes": ["ATH"], "primary": "ATH", "subtitle": "Capital of Greece"},
-    "Istanbul": {"codes": ["IST", "SAW"], "primary": "IST", "subtitle": "Turkey"},
-    "Dubai": {"codes": ["DXB", "AUH", "SHJ"], "primary": "DXB", "subtitle": "United Arab Emirates"},
-    "Tokyo": {"codes": ["HND", "NRT"], "primary": "HND", "subtitle": "Capital of Japan"},
-    "Osaka / Kyoto": {"codes": ["KIX", "ITM", "UKB"], "primary": "KIX", "subtitle": "Kansai Region, Japan"},
-    "Seoul": {"codes": ["ICN", "GMP"], "primary": "ICN", "subtitle": "Capital of South Korea"},
-    "Taipei": {"codes": ["TPE", "TSA"], "primary": "TPE", "subtitle": "Capital of Taiwan"},
-    "Hong Kong": {"codes": ["HKG", "MFM"], "primary": "HKG", "subtitle": "Pearl River Delta"},
-    "Bangkok": {"codes": ["BKK", "DMK"], "primary": "BKK", "subtitle": "Capital of Thailand"},
-    "Singapore": {"codes": ["SIN"], "primary": "SIN", "subtitle": "Republic of Singapore"},
-}
+
+METRO_GROUPS: dict[str, dict[str, object]] = _build_metro_groups(AIRPORTS)
+
+
+def register_discovered_airport(code: str, name: str = "", city: str = "") -> None:
+    """Register airport metadata extracted directly from a flight search response."""
+    upper = code.strip().upper()
+    if len(upper) != 3 or upper in AIRPORTS:
+        return
+    clean_name = name.strip() or f"{upper} Airport"
+    inferred_city = city.strip()
+    if not inferred_city:
+        # Extract city prefix if airport name is e.g. "Heraklion International Airport"
+        for suffix in (" International Airport", " Airport", " National Airport"):
+            if clean_name.endswith(suffix) and len(clean_name) > len(suffix):
+                inferred_city = clean_name[: -len(suffix)].split("(")[0].split('"')[0].strip()
+                break
+    existing = DISCOVERED_AIRPORTS.get(upper)
+    if existing and existing.name != f"{upper} Airport" and clean_name == f"{upper} Airport":
+        return
+    DISCOVERED_AIRPORTS[upper] = AirportInfo(
+        code=upper,
+        name=clean_name,
+        city=inferred_city or upper,
+        country="INTL",
+        region="INTL",
+        lat=0.0,
+        lon=0.0,
+        metro_code=upper,
+        is_major_hub=False,
+        nearby_codes=(),
+        has_coordinates=False,
+    )
+
+
+def record_observed_duration(origin: str, destination: str, duration_hours: float) -> None:
+    """Record actual flight block duration observed from flight search results."""
+    orig = origin.strip().upper()
+    dest = destination.strip().upper()
+    if len(orig) != 3 or len(dest) != 3 or orig == dest or duration_hours <= 0:
+        return
+    pair = (orig, dest)
+    prev = OBSERVED_PAIR_HOURS.get(pair)
+    if prev is None or duration_hours < prev:
+        OBSERVED_PAIR_HOURS[pair] = round(duration_hours, 2)
+    rev_pair = (dest, orig)
+    if rev_pair not in OBSERVED_PAIR_HOURS:
+        OBSERVED_PAIR_HOURS[rev_pair] = round(duration_hours, 2)
+
+
+def all_known_airports() -> dict[str, AirportInfo]:
+    """Return catalog airports merged with airports discovered during flight searches."""
+    return {**DISCOVERED_AIRPORTS, **AIRPORTS}
 
 
 def get_airport(code: str) -> AirportInfo:
-    """Return airport metadata, or synthesize a reasonable fallback for unknown codes."""
+    """Return airport metadata from catalog or flight search discovery without inventing coordinates."""
     upper = code.strip().upper()
     if upper in AIRPORTS:
         return AIRPORTS[upper]
-    # Deterministic fallback coordinates based on code characters
-    seed = sum(ord(ch) * (idx + 1) for idx, ch in enumerate(upper))
-    lat = ((seed % 90) - 30) * 1.0
-    lon = (((seed * 7) % 280) - 140) * 1.0
+    if upper in DISCOVERED_AIRPORTS:
+        return DISCOVERED_AIRPORTS[upper]
     return AirportInfo(
         code=upper,
         name=f"{upper} Airport",
         city=upper,
         country="INTL",
-        region="EU" if lon > -20 and lon < 40 else ("ASIA" if lon >= 40 else "NA"),
-        lat=lat,
-        lon=lon,
+        region="INTL",
+        lat=0.0,
+        lon=0.0,
         metro_code=upper,
         is_major_hub=False,
         nearby_codes=(),
+        has_coordinates=False,
     )
 
 
 def haversine_km(code_a: str, code_b: str) -> float:
-    """Compute great-circle distance in kilometers between two airport codes."""
-    if code_a.upper() == code_b.upper():
+    """Compute great-circle distance in kilometers between two airport codes,
+    falling back to observed flight duration if coordinates are unknown.
+    """
+    orig = code_a.strip().upper()
+    dest = code_b.strip().upper()
+    if orig == dest:
         return 0.0
-    a = get_airport(code_a)
-    b = get_airport(code_b)
+    a = get_airport(orig)
+    b = get_airport(dest)
+    if not a.has_coordinates or not b.has_coordinates:
+        obs_hrs = OBSERVED_PAIR_HOURS.get((orig, dest))
+        if obs_hrs is not None:
+            return round(max(80.0, (obs_hrs - 0.5) * 800.0), 1)
+        return 0.0
     r = 6371.0
     lat1, lon1 = math.radians(a.lat), math.radians(a.lon)
     lat2, lon2 = math.radians(b.lat), math.radians(b.lon)
@@ -186,8 +163,20 @@ def haversine_km(code_a: str, code_b: str) -> float:
 
 
 def estimate_nonstop_hours(code_a: str, code_b: str) -> float:
-    """Estimate realistic block time in hours between two airports."""
-    dist_km = haversine_km(code_a, code_b)
+    """Estimate block time in hours between two airports, preferring observed flight search durations."""
+    orig = code_a.strip().upper()
+    dest = code_b.strip().upper()
+    if orig == dest:
+        return 0.0
+    obs_hrs = OBSERVED_PAIR_HOURS.get((orig, dest))
+    if obs_hrs is not None:
+        return obs_hrs
+    a = get_airport(orig)
+    b = get_airport(dest)
+    if not a.has_coordinates or not b.has_coordinates:
+        # Safe neutral fallback when coordinates are missing and route hasn't been searched yet
+        return 3.5
+    dist_km = haversine_km(orig, dest)
     if dist_km <= 0:
         return 0.0
     # Cruise ~830 km/h + 0.65h taxi/climb/approach
@@ -206,8 +195,9 @@ def suggest_airports(query: str) -> list[dict[str, object]]:
     q = query.strip().lower()
     results: list[dict[str, object]] = []
     seen: set[str] = set()
+    known = all_known_airports()
 
-    for info in AIRPORTS.values():
+    for info in known.values():
         if (
             not q
             or q in info.code.lower()
@@ -218,15 +208,15 @@ def suggest_airports(query: str) -> list[dict[str, object]]:
             if info.code in seen:
                 continue
             seen.add(info.code)
-            nearby_details = [
+            nearby_details: list[dict[str, object]] = [
                 {
                     "code": nb,
-                    "name": AIRPORTS[nb].name,
-                    "city": AIRPORTS[nb].city,
-                    "same_metro": AIRPORTS[nb].metro_code == info.metro_code,
+                    "name": known[nb].name,
+                    "city": known[nb].city,
+                    "same_metro": known[nb].metro_code == info.metro_code,
                 }
                 for nb in info.nearby_codes
-                if nb in AIRPORTS
+                if nb in known
             ]
             results.append(
                 {
@@ -247,6 +237,8 @@ def candidate_intermediate_hubs(origin: str, destination: str, max_hubs: int = 3
     """Find geographically sensible major transit hubs between origin and destination."""
     orig_info = get_airport(origin)
     dest_info = get_airport(destination)
+    if not orig_info.has_coordinates or not dest_info.has_coordinates:
+        return []
     direct_km = haversine_km(origin, destination)
 
     # Only split legs that are medium/long haul (>= 2,200 km)

@@ -31,8 +31,55 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-ignore = ["E501"]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "C4",    # flake8-comprehensions
+    "PIE",   # flake8-pie
+    "PT",    # flake8-pytest-style
+    "RET",   # flake8-return
+    "RUF",   # Ruff-specific rules
+    "PERF",  # Perflint
+    "FURB",  # refurb
+    "ANN",   # flake8-annotations
+    "ASYNC", # flake8-async
+    "S",     # flake8-bandit (security)
+    "BLE",   # flake8-blind-except
+    "A",     # flake8-builtins
+    "DTZ",   # flake8-datetimez
+    "T20",   # flake8-print
+    "ARG",   # flake8-unused-arguments
+    "PTH",   # flake8-use-pathlib
+    "ERA",   # eradicate (commented-out code)
+    "PL",    # Pylint (PLC, PLE, PLR, PLW)
+    "TID",   # flake8-tidy-imports
+    "ISC",   # flake8-implicit-str-concat
+    "FLY",   # flynt
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format
+    "SLF",   # flake8-self
+]
+ignore = [
+    "E501",    # line length handled by ruff format
+    "ANN401",  # dynamically typed Any payloads in external API parsers/schemas
+    "PLR0911", # too-many-return-statements
+    "PLR0912", # too-many-branches
+    "PLR0913", # too-many-arguments
+    "PLR0915", # too-many-statements
+    "PLR0917", # too-many-positional-arguments
+    "PLR2004", # magic-value-comparison
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",   # allow assert in pytest suites
+    "SLF001", # allow white-box testing of private members in tests
+]
 
 [tool.ruff.format]
 quote-style = "double"

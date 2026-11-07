@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import os
+import queue
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.data.airports import (
-    AIRPORTS,
-    CITY_DISTANCE_MI,
-    COUNTRY_NAMES,
     METRO_GROUPS,
+    all_known_airports,
     get_airport,
     suggest_airports,
 )
@@ -59,6 +61,7 @@ def provider_status() -> dict[str, object]:
 
 @app.get("/api/airports")
 def list_airports(q: str = Query(default="", description="City, airport name, or IATA code")) -> dict[str, object]:
+    known = all_known_airports()
     return {
         "suggestions": suggest_airports(q),
         "metros": METRO_GROUPS,
@@ -68,16 +71,15 @@ def list_airports(q: str = Query(default="", description="City, airport name, or
                 "name": info.name,
                 "city": info.city,
                 "country": info.country,
-                "country_name": COUNTRY_NAMES.get(info.country, info.country),
+                "country_name": info.country,
                 "region": info.region,
-                "lat": info.lat,
-                "lon": info.lon,
+                "lat": info.lat if info.has_coordinates else None,
+                "lon": info.lon if info.has_coordinates else None,
                 "metro_code": info.metro_code,
                 "is_major_hub": info.is_major_hub,
-                "city_distance_mi": CITY_DISTANCE_MI.get(code, 12),
                 "nearby": list(info.nearby_codes),
             }
-            for code, info in AIRPORTS.items()
+            for code, info in known.items()
         },
     }
 
@@ -85,6 +87,7 @@ def list_airports(q: str = Query(default="", description="City, airport name, or
 @app.get("/api/airport/{code}")
 def get_airport_info(code: str) -> dict[str, object]:
     info = get_airport(code)
+    known = all_known_airports()
     return {
         "code": info.code,
         "name": info.name,
@@ -95,9 +98,9 @@ def get_airport_info(code: str) -> dict[str, object]:
         "nearby": [
             {
                 "code": nb,
-                "name": AIRPORTS[nb].name if nb in AIRPORTS else nb,
-                "city": AIRPORTS[nb].city if nb in AIRPORTS else nb,
-                "same_metro": (AIRPORTS[nb].metro_code == info.metro_code) if nb in AIRPORTS else False,
+                "name": known[nb].name if nb in known else nb,
+                "city": known[nb].city if nb in known else nb,
+                "same_metro": (known[nb].metro_code == info.metro_code) if nb in known else False,
             }
             for nb in info.nearby_codes
         ],
@@ -115,10 +118,47 @@ def clear_cache() -> CacheStats:
     return flight_cache.get_stats()
 
 
+def _stream_optimization_events(request: TripRequest) -> Iterator[str]:
+    event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+
+    def on_progress(event: dict[str, object]) -> None:
+        event_queue.put({"type": "progress", **event})
+
+    def worker() -> None:
+        try:
+            result = optimize_trip(
+                request,
+                raw_provider=flight_provider,
+                cache=flight_cache,
+                progress_callback=on_progress,
+            )
+            event_queue.put({"type": "result", "data": result.model_dump(mode="json")})
+        except Exception as exc:  # noqa: BLE001
+            event_queue.put({"type": "error", "detail": str(exc)})
+        finally:
+            event_queue.put(None)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    while True:
+        item = event_queue.get()
+        if item is None:
+            break
+        yield json.dumps(item) + "\n"
+
+
 @app.post("/api/optimize", response_model=OptimizationResponse)
-def run_optimization(request: TripRequest) -> OptimizationResponse:
+def run_optimization(request: TripRequest, raw_request: Request) -> OptimizationResponse | StreamingResponse:
     if request.provider_mode == ProviderMode.OFFLINE and os.environ.get("FARESPLIT_TESTING") != "1":
         raise HTTPException(status_code=403, detail="Simulated flights are disabled outside testing mode.")
+
+    if raw_request.headers.get("x-stream-progress") == "1":
+        return StreamingResponse(
+            _stream_optimization_events(request),
+            media_type="application/x-ndjson",
+        )
+
     try:
         return optimize_trip(request, raw_provider=flight_provider, cache=flight_cache)
     except ValueError as exc:

@@ -9,7 +9,7 @@ from collections.abc import Generator
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from backend.app.main import app
 
@@ -132,7 +132,7 @@ def test_ux_date_grid_drag_and_mocked_optimize_response(page: Page, live_server_
     # Intercept `/api/optimize` with a deterministic mocked response to verify UI rendering
     captured_requests: list[dict[str, object]] = []
 
-    def handle_mock_optimize(route) -> None:  # type: ignore[no-untyped-def]
+    def handle_mock_optimize(route: Route) -> None:
         req_json = route.request.post_data_json
         captured_requests.append(req_json)
         # Forward to the real offline solver by forcing provider_mode="offline"

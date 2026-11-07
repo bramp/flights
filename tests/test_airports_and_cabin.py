@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date
+from types import SimpleNamespace
+
 import pytest
 
 from backend.app.data.airports import (
     AIRPORTS,
+    DISCOVERED_AIRPORTS,
+    OBSERVED_PAIR_HOURS,
     candidate_intermediate_hubs,
     estimate_nonstop_hours,
     get_airport,
@@ -21,6 +26,7 @@ from backend.app.models.schemas import (
     StopsMode,
     StopsPolicy,
 )
+from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.providers.pricing_engine import RealisticPricingProvider
 from backend.app.solver.cabin import (
     filter_options_by_stops,
@@ -107,8 +113,6 @@ def test_highest_cabin_ranking() -> None:
 
 
 def test_resolve_leg_max_stops_and_filtering() -> None:
-    from datetime import date
-
     policy = StopsPolicy(
         short_haul_stops=ConcreteStopsMode.NONSTOP,
         long_haul_stops=ConcreteStopsMode.ONE_STOP,
@@ -124,9 +128,124 @@ def test_resolve_leg_max_stops_and_filtering() -> None:
 
     prov = RealisticPricingProvider()
     ath_jtr = prov.search_leg("ATH", "JTR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)
-    assert ath_jtr and all(o.stops_count == 0 for o in filter_options_by_stops(ath_jtr, 0))
+    assert ath_jtr
+    assert all(o.stops_count == 0 for o in filter_options_by_stops(ath_jtr, 0))
 
     # When no nonstop exists (e.g. SFO -> ATH), filter_options_by_stops(0) falls back to 1-stop
     sfo_ath = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)
     filtered_sfo_ath = filter_options_by_stops(sfo_ath, 0)
-    assert filtered_sfo_ath and all(o.stops_count == 1 for o in filtered_sfo_ath)
+    assert filtered_sfo_ath
+    assert all(o.stops_count == 1 for o in filtered_sfo_ath)
+
+
+def test_unknown_airport_never_invents_fake_coordinates_and_learns_from_search() -> None:
+    DISCOVERED_AIRPORTS.pop("CHQ", None)
+    OBSERVED_PAIR_HOURS.pop(("ATH", "CHQ"), None)
+    OBSERVED_PAIR_HOURS.pop(("CHQ", "ATH"), None)
+
+    unknown = get_airport("CHQ")
+    assert unknown.has_coordinates is False
+    # Missing airport data must not invent random ocean coordinates or upgrade to long-haul Business
+    assert haversine_km("ATH", "CHQ") == 0.0
+    assert candidate_intermediate_hubs("ATH", "CHQ") == []
+    policy = CabinPolicy(
+        default_cabin=ConcreteCabinClass.ECONOMY,
+        long_haul_cabin=ConcreteCabinClass.BUSINESS,
+        long_haul_threshold_hours=6.5,
+    )
+    assert resolve_leg_cabin("ATH", "CHQ", CabinClass.AUTO, policy) == ConcreteCabinClass.ECONOMY
+
+    # Simulate a fast_flights ResultList with metadata.airlines and airport names/durations
+    class FakeResultList(list):  # type: ignore[type-arg]
+        pass
+
+    fake_results = FakeResultList(
+        [
+            SimpleNamespace(
+                type="multi",
+                price=62,
+                airlines=["Aegean"],
+                flights=[
+                    SimpleNamespace(
+                        from_airport=SimpleNamespace(code="ATH", name="Athens International Airport"),
+                        to_airport=SimpleNamespace(code="CHQ", name="Chania International Airport"),
+                        departure=SimpleNamespace(date=(2026, 12, 15), time=(10, 0)),
+                        arrival=SimpleNamespace(date=(2026, 12, 15), time=(10, 50)),
+                        duration=50,
+                        plane_type="Airbus A320",
+                    )
+                ],
+            )
+        ]
+    )
+    fake_results.metadata = SimpleNamespace(
+        airlines=[SimpleNamespace(code="A3", name="Aegean")],
+        alliances=[],
+    )
+
+    parsed = CompositeFlightProvider.parse_fast_flights_results(
+        fake_results,
+        origin="ATH",
+        destination="CHQ",
+        departure_date=date(2026, 12, 15),
+        cabin=ConcreteCabinClass.ECONOMY,
+    )
+    assert len(parsed) == 1
+    assert parsed[0].airline == "A3"
+    assert parsed[0].alliance == "Star Alliance"
+
+    # Now CHQ airport name/city and exact observed flight duration are known from the search!
+    learned = get_airport("CHQ")
+    assert learned.name == "Chania International Airport"
+    assert learned.city == "Chania"
+    assert estimate_nonstop_hours("ATH", "CHQ") == 0.83
+
+    # Multi-carrier itinerary mixing an aligned airline and an LCC is marked LCC/Non-Aligned,
+    # and multi-stop total air duration is recorded for the endpoint pair (SFO -> CHQ).
+    OBSERVED_PAIR_HOURS.pop(("SFO", "CHQ"), None)
+    mixed_results = FakeResultList(
+        [
+            SimpleNamespace(
+                type="multi",
+                price=1100,
+                airlines=["Aegean", "easyJet"],
+                flights=[
+                    SimpleNamespace(
+                        from_airport=SimpleNamespace(code="SFO", name="San Francisco International Airport"),
+                        to_airport=SimpleNamespace(code="ATH", name="Athens International Airport"),
+                        departure=SimpleNamespace(date=(2026, 12, 15), time=(10, 0)),
+                        arrival=SimpleNamespace(date=(2026, 12, 16), time=(6, 0)),
+                        duration=720,
+                        plane_type="Boeing 787",
+                    ),
+                    SimpleNamespace(
+                        from_airport=SimpleNamespace(code="ATH", name="Athens International Airport"),
+                        to_airport=SimpleNamespace(code="CHQ", name="Chania International Airport"),
+                        departure=SimpleNamespace(date=(2026, 12, 16), time=(8, 0)),
+                        arrival=SimpleNamespace(date=(2026, 12, 16), time=(8, 50)),
+                        duration=50,
+                        plane_type="Airbus A320",
+                    ),
+                ],
+            )
+        ]
+    )
+    mixed_results.metadata = SimpleNamespace(
+        airlines=[
+            SimpleNamespace(code="A3", name="Aegean"),
+            SimpleNamespace(code="U2", name="easyJet"),
+        ],
+        alliances=[],
+    )
+    parsed_mixed = CompositeFlightProvider.parse_fast_flights_results(
+        mixed_results,
+        origin="SFO",
+        destination="CHQ",
+        departure_date=date(2026, 12, 15),
+        cabin=ConcreteCabinClass.BUSINESS,
+    )
+    assert len(parsed_mixed) == 1
+    assert parsed_mixed[0].is_lcc is True
+    assert parsed_mixed[0].alliance == "LCC"
+    assert estimate_nonstop_hours("SFO", "CHQ") == 12.83
+    assert resolve_leg_cabin("SFO", "CHQ", CabinClass.AUTO, policy) == ConcreteCabinClass.BUSINESS

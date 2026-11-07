@@ -173,10 +173,15 @@ test("Optimize submits edited inputs, shows loading and clears stale results", a
     });
     await expect(page.locator("#optimizeBtn")).toBeDisabled();
     await expect(page.locator("#optimizeBtn")).toContainText("Optimizing");
+    await expect(page.locator("#optimizeProgress")).toBeVisible();
+    await expect(page.locator("#optimizeProgressBar")).toBeVisible();
+    await expect(page.locator("#optimizeProgressCounts")).toContainText("queries");
+    await expect(page.locator("#optimizeCurrentQuery")).toContainText("SFO → ATH");
   } finally {
     releaseResponse();
   }
   await expect(page.locator("#optimizeBtn")).toBeEnabled();
+  await expect(page.locator("#optimizeProgress")).toBeHidden();
   await expect(page.locator("#staleNoticeBadge")).toBeHidden();
   await expect(page.locator("#resultsContainer")).not.toHaveClass(/results-stale/);
   await expect(page.locator(".itinerary-hero h2")).toHaveText("Single Multi-City Ticket");

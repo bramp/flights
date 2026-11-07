@@ -241,6 +241,42 @@
           </button>
         </div>
       </div>
+
+      <!-- Optimization Progress Panel -->
+      <div id="optimizeProgress" class="optimize-progress hidden" role="status" aria-live="polite">
+        <div class="progress-header">
+          <div class="progress-title-wrap">
+            <span class="progress-spinner" aria-hidden="true"></span>
+            <div class="progress-text-group">
+              <div id="optimizeProgressPhase" class="progress-phase">Optimizing Multi-City Schedules &amp; Ticket Partitions…</div>
+              <div id="optimizeCurrentQuery" class="progress-current-query">Preparing flight queries…</div>
+            </div>
+          </div>
+          <div class="progress-stats-right">
+            <span id="optimizeProgressCounts" class="progress-counts-badge">0 / 0 queries</span>
+            <span id="optimizeProgressPct" class="progress-pct-badge">0%</span>
+          </div>
+        </div>
+        <div
+          id="optimizeProgressBar"
+          class="progress-bar-track"
+          role="progressbar"
+          aria-label="Optimization progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div id="optimizeProgressFill" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <div class="progress-meta-row">
+          <div class="progress-counters">
+            <span id="progressScheduleText" class="progress-meta-pill">📅 Schedule: 1 / 4</span>
+            <span id="progressCacheHitsText" class="progress-meta-pill">⚡ Cache hits: 0</span>
+            <span id="progressLiveCallsText" class="progress-meta-pill">🌐 Live queries: 0</span>
+          </div>
+          <div id="progressRecentQueries" class="progress-recent-queries"></div>
+        </div>
+      </div>
     </section>
 
     <!-- RESULTS SECTION -->

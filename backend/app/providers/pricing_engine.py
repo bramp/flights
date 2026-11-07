@@ -142,7 +142,7 @@ CARRIERS: tuple[CarrierProfile, ...] = (
 )
 
 CABIN_MULTIPLIERS: dict[ConcreteCabinClass, tuple[float, float]] = {
-    # (one_way_multiplier, round_trip_half_multiplier)
+    # Format: one_way_multiplier and round_trip_half_multiplier.
     # Note how Legacy Long-Haul One-Way Business/Economy is disproportionately expensive
     # compared to half of a Round-Trip / Open-Jaw fare!
     ConcreteCabinClass.ECONOMY: (1.0, 1.0),
@@ -179,11 +179,13 @@ class RealisticPricingProvider(FlightSearchProvider):
 
         orig_info = get_airport(orig)
         dest_info = get_airport(dest)
-        dist_km = haversine_km(orig, dest)
         nonstop_hours = estimate_nonstop_hours(orig, dest)
-        is_intercontinental = orig_info.region != dest_info.region and dist_km > 3200
+        raw_dist_km = haversine_km(orig, dest)
+        dist_km = raw_dist_km if raw_dist_km > 0 else max(400.0, (nonstop_hours - 0.65) * 830.0)
+        has_both_coords = orig_info.has_coordinates and dest_info.has_coordinates
+        is_intercontinental = has_both_coords and orig_info.region != dest_info.region and dist_km > 3200
         is_short_haul = dist_km < 2600
-        is_same_region_short_haul = orig_info.region == dest_info.region and dist_km <= 2800
+        is_same_region_short_haul = (not has_both_coords) or (orig_info.region == dest_info.region and dist_km <= 2800)
 
         # Day-of-week & seasonal demand factor
         weekday = departure_date.weekday()  # 0=Mon .. 6=Sun
@@ -196,7 +198,7 @@ class RealisticPricingProvider(FlightSearchProvider):
             if carrier.is_lcc:
                 # LCCs operate either short-haul within region or specific long-haul pairs
                 if is_same_region_short_haul and orig_info.region in carrier.regions:
-                    if cabin in (ConcreteCabinClass.FIRST,) or (
+                    if cabin == ConcreteCabinClass.FIRST or (
                         cabin == ConcreteCabinClass.BUSINESS and carrier.code not in ("B6", "ZG", "TR")
                     ):
                         continue

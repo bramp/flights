@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from backend.app.models.schemas import (
     BookedTicket,
     ConcreteCabinClass,
@@ -52,8 +54,49 @@ def _fetch_all_airport_pair_options(
         return []
     cabin = cabin_override or resolve_leg_cabin(origs[0], dests[0], leg_spec.requested_cabin, request.cabin_policy)
     raw_options = provider.search_leg_batch(origs, dests, leg_spec.departure_date, cabin)
-    max_stops = resolve_leg_max_stops(origs[0], dests[0], leg_spec.requested_stops, request.stops_policy)
+    max_stops = resolve_leg_max_stops(
+        origs[0], dests[0], leg_spec.requested_stops, request.stops_policy, options=raw_options
+    )
     return filter_options_by_stops(raw_options, max_stops)
+
+
+def _slug(label: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in label).strip("-") or "group"
+
+
+def _candidate_carrier_groups(
+    options_by_slice: list[list[FlightLegOption]],
+) -> list[tuple[str, list[list[FlightLegOption]]]]:
+    """Return candidate (group_label, filtered_options_per_slice) groups that can be booked
+    onto a single multi-slice ticket:
+    1. Major airline alliances (Star Alliance, Oneworld, SkyTeam) present across all slices.
+    2. Individual non-aligned, non-LCC carriers (by airline code) present across all slices,
+       so airlines returned by Google Flights can form Round-Trip, Open-Jaw, Nested, or
+       Multi-City tickets without requiring hardcoded alliance tables.
+    """
+    if not options_by_slice or any(not opts for opts in options_by_slice):
+        return []
+
+    groups: list[tuple[str, list[list[FlightLegOption]]]] = []
+    for alliance in MAJOR_ALLIANCES:
+        per_slice = [[o for o in opts if o.alliance == alliance and not o.is_lcc] for opts in options_by_slice]
+        if all(per_slice):
+            groups.append((alliance, per_slice))
+
+    carrier_names: dict[str, str] = {}
+    for o in options_by_slice[0]:
+        if not o.is_lcc and o.alliance not in MAJOR_ALLIANCES and o.airline.strip():
+            carrier_names.setdefault(o.airline.strip().upper(), o.airline_name)
+
+    for code, name in sorted(carrier_names.items()):
+        per_slice = [
+            [o for o in opts if o.airline.strip().upper() == code and not o.is_lcc] for opts in options_by_slice
+        ]
+        if all(per_slice):
+            label = name if name and name != "Airline" else code
+            groups.append((label, per_slice))
+
+    return groups
 
 
 def _leg_generalized_cost(
@@ -178,25 +221,16 @@ def evaluate_single_multi_city_ticket(
     has_mixed_cabin_request = len(set(desired_cabins)) > 1
 
     best_itinerary: EvaluatedItinerary | None = None
+    all_slice_options = [
+        _fetch_all_airport_pair_options(leg_spec, request, provider, cabin_override=uniform_cabin)
+        for leg_spec in schedule.legs
+    ]
 
-    for alliance in MAJOR_ALLIANCES:
-        chosen_legs: list[FlightLegOption] = []
-        possible = True
-        for leg_spec in schedule.legs:
-            # Single PNR prices in uniform highest cabin (or mixed with GDS combinability penalty)
-            options = _fetch_all_airport_pair_options(leg_spec, request, provider, cabin_override=uniform_cabin)
-            alliance_opts = [o for o in options if o.alliance == alliance and not o.is_lcc]
-            if not alliance_opts:
-                possible = False
-                break
-            best_leg = min(
-                alliance_opts,
-                key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True),
-            )
-            chosen_legs.append(best_leg)
-
-        if not possible:
-            continue
+    for alliance, per_slice_opts in _candidate_carrier_groups(all_slice_options):
+        chosen_legs = [
+            min(slice_opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
+            for slice_opts in per_slice_opts
+        ]
 
         base_fare = provider.quote_multi_slice_ticket(chosen_legs, TicketType.MULTI_CITY)
         bag_fees = round(sum(_compute_baggage_fee(leg, request) * 0.75 for leg in chosen_legs), 2)
@@ -204,7 +238,7 @@ def evaluate_single_multi_city_ticket(
             f"{leg.origin}→{leg.destination} ({leg.departure_date.isoformat()})" for leg in chosen_legs
         )
         ticket = BookedTicket(
-            ticket_id=f"{schedule.schedule_id}-mc-{alliance.lower().replace(' ', '-')}",
+            ticket_id=f"{schedule.schedule_id}-mc-{_slug(alliance)}",
             ticket_type=TicketType.MULTI_CITY,
             label=f"Single Multi-City Ticket ({alliance})",
             airline_or_alliance=alliance,
@@ -236,7 +270,7 @@ def evaluate_single_multi_city_ticket(
             )
 
         itin = _assemble_itinerary(
-            itinerary_id=f"{schedule.schedule_id}-single-{alliance[:4].lower()}",
+            itinerary_id=f"{schedule.schedule_id}-single-{_slug(alliance)}",
             strategy=StrategyKind.SINGLE_TICKET,
             strategy_label="1 Single Multi-City Ticket",
             strategy_description="All flights on a single alliance booking (1 PNR) with full connection protection.",
@@ -361,18 +395,13 @@ def evaluate_open_jaw_plus_regional(
             )
         )
 
-    # Now evaluate pairing Leg 0 + Leg N-1 as an Open-Jaw / Round-Trip on a shared alliance
+    # Now evaluate pairing Leg 0 + Leg N-1 as an Open-Jaw / Round-Trip on a shared alliance or carrier
     first_options = _fetch_all_airport_pair_options(first_spec, request, provider)
     last_options = _fetch_all_airport_pair_options(last_spec, request, provider)
 
     best_itin: EvaluatedItinerary | None = None
 
-    for alliance in MAJOR_ALLIANCES:
-        f_alliance = [o for o in first_options if o.alliance == alliance and not o.is_lcc]
-        l_alliance = [o for o in last_options if o.alliance == alliance and not o.is_lcc]
-        if not f_alliance or not l_alliance:
-            continue
-
+    for alliance, (f_alliance, l_alliance) in _candidate_carrier_groups([first_options, last_options]):
         best_f = min(f_alliance, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
         best_l = min(l_alliance, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
 
@@ -388,7 +417,7 @@ def evaluate_open_jaw_plus_regional(
             else f"{best_f.cabin.value.title()} / {best_l.cabin.value.title()}"
         )
         anchor_ticket = BookedTicket(
-            ticket_id=f"{schedule.schedule_id}-anchor-{alliance[:3].lower()}",
+            ticket_id=f"{schedule.schedule_id}-anchor-{_slug(alliance)}",
             ticket_type=t_type,
             label=f"Ticket #1: Anchor {t_type_name} ({best_f.origin} → {best_f.destination} / {best_l.origin} → {best_l.destination})",
             airline_or_alliance=alliance,
@@ -418,7 +447,7 @@ def evaluate_open_jaw_plus_regional(
         ]
 
         itin = _assemble_itinerary(
-            itinerary_id=f"{schedule.schedule_id}-oj-{alliance[:3].lower()}",
+            itinerary_id=f"{schedule.schedule_id}-oj-{_slug(alliance)}",
             strategy=StrategyKind.OPEN_JAW_PLUS_REGIONAL,
             strategy_label=f"Anchor {t_type_name} + {len(middle_tickets)} Regional One-Way{'s' if len(middle_tickets) != 1 else ''}",
             strategy_description="Pairs long-haul outbound & return onto one Open-Jaw/Round-Trip ticket, with separate regional hops.",
@@ -456,13 +485,10 @@ def evaluate_nested_round_trips(
         return None
 
     best_itin: EvaluatedItinerary | None = None
+    outer_groups = _candidate_carrier_groups([first_options, last_options])
+    inner_groups = _candidate_carrier_groups(inner_options_by_spec)
 
-    for outer_alliance in MAJOR_ALLIANCES:
-        f_opts = [o for o in first_options if o.alliance == outer_alliance and not o.is_lcc]
-        l_opts = [o for o in last_options if o.alliance == outer_alliance and not o.is_lcc]
-        if not f_opts or not l_opts:
-            continue
-
+    for outer_alliance, (f_opts, l_opts) in outer_groups:
         best_f = min(f_opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
         best_l = min(l_opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
         is_exact_rt = best_f.origin == best_l.destination and best_f.destination == best_l.origin
@@ -473,25 +499,19 @@ def evaluate_nested_round_trips(
             else f"{best_f.cabin.value.title()} / {best_l.cabin.value.title()}"
         )
 
-        # Inner regional legs bundled on a regional alliance Open-Jaw / Multi-City ticket
-        for inner_alliance in MAJOR_ALLIANCES:
-            inner_chosen: list[FlightLegOption] = []
-            possible = True
-            for opts in inner_options_by_spec:
-                al_opts = [o for o in opts if o.alliance == inner_alliance and not o.is_lcc]
-                if not al_opts:
-                    possible = False
-                    break
-                inner_chosen.append(
-                    min(al_opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
-                )
-            if not possible or not inner_chosen:
+        # Inner regional legs bundled on a regional alliance/carrier Open-Jaw / Multi-City ticket
+        for inner_alliance, inner_per_slice in inner_groups:
+            inner_chosen = [
+                min(al_opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=True))
+                for al_opts in inner_per_slice
+            ]
+            if not inner_chosen:
                 continue
 
             outer_base = provider.quote_multi_slice_ticket([best_f, best_l], outer_t_type)
             outer_bags = round(_compute_baggage_fee(best_f, request) + _compute_baggage_fee(best_l, request), 2)
             outer_ticket = BookedTicket(
-                ticket_id=f"{schedule.schedule_id}-nested-outer-{outer_alliance[:3].lower()}",
+                ticket_id=f"{schedule.schedule_id}-nested-outer-{_slug(outer_alliance)}",
                 ticket_type=outer_t_type,
                 label=f"Ticket #1: Outer Long-Haul Ticket ({outer_alliance})",
                 airline_or_alliance=outer_alliance,
@@ -513,7 +533,7 @@ def evaluate_nested_round_trips(
             inner_bags = round(sum(_compute_baggage_fee(leg, request) * 0.85 for leg in inner_chosen), 2)
             inner_cabins = highest_cabin([leg.cabin for leg in inner_chosen])
             inner_ticket = BookedTicket(
-                ticket_id=f"{schedule.schedule_id}-nested-inner-{inner_alliance[:3].lower()}",
+                ticket_id=f"{schedule.schedule_id}-nested-inner-{_slug(inner_alliance)}",
                 ticket_type=inner_t_type,
                 label=f"Ticket #2: Nested Regional Ticket ({inner_alliance})",
                 airline_or_alliance=inner_alliance,
@@ -532,7 +552,7 @@ def evaluate_nested_round_trips(
 
             all_legs = [best_f, *inner_chosen, best_l]
             itin = _assemble_itinerary(
-                itinerary_id=f"{schedule.schedule_id}-nested-{outer_alliance[:2].lower()}-{inner_alliance[:2].lower()}",
+                itinerary_id=f"{schedule.schedule_id}-nested-{_slug(outer_alliance)}-{_slug(inner_alliance)}",
                 strategy=StrategyKind.NESTED_ROUND_TRIPS,
                 strategy_label="2 Nested Multi-Stop Tickets (Outer + Inner)",
                 strategy_description="2 tickets total: 1 outer long-haul ticket + 1 nested regional multi-city ticket.",
@@ -572,29 +592,37 @@ def evaluate_all_partitions_for_schedule(
     schedule: CandidateSchedule,
     request: TripRequest,
     provider: FlightSearchProvider,
+    on_strategy_start: Callable[[str], None] | None = None,
+    on_strategy_done: Callable[[str], None] | None = None,
 ) -> list[EvaluatedItinerary]:
     """Evaluate all ticket partitioning strategies on a candidate schedule and compute relative savings."""
     results: list[EvaluatedItinerary] = []
 
-    single = evaluate_single_multi_city_ticket(schedule, request, provider)
-    if single:
-        results.append(single)
+    strategy_runners: list[
+        tuple[str, Callable[[CandidateSchedule, TripRequest, FlightSearchProvider], EvaluatedItinerary | None]]
+    ] = [
+        ("1 Single Multi-City Ticket", evaluate_single_multi_city_ticket),
+        ("Separate One-Way Tickets", evaluate_all_one_ways),
+        ("Anchor Open-Jaw + Regional Hops", evaluate_open_jaw_plus_regional),
+        ("Nested Multi-Stop Tickets", evaluate_nested_round_trips),
+        ("Intermediate Hub-Split", evaluate_hub_split_strategy),
+    ]
 
-    one_ways = evaluate_all_one_ways(schedule, request, provider)
-    if one_ways:
-        results.append(one_ways)
+    single: EvaluatedItinerary | None = None
+    one_ways: EvaluatedItinerary | None = None
 
-    open_jaw = evaluate_open_jaw_plus_regional(schedule, request, provider)
-    if open_jaw:
-        results.append(open_jaw)
-
-    nested = evaluate_nested_round_trips(schedule, request, provider)
-    if nested:
-        results.append(nested)
-
-    hub_split = evaluate_hub_split_strategy(schedule, request, provider)
-    if hub_split:
-        results.append(hub_split)
+    for label, runner in strategy_runners:
+        if on_strategy_start is not None:
+            on_strategy_start(label)
+        itin = runner(schedule, request, provider)
+        if itin:
+            results.append(itin)
+            if itin.strategy == StrategyKind.SINGLE_TICKET:
+                single = itin
+            elif itin.strategy == StrategyKind.ALL_ONE_WAYS:
+                one_ways = itin
+        if on_strategy_done is not None:
+            on_strategy_done(label)
 
     # Compute savings deltas vs Single Multi-City Ticket and vs All One-Ways
     single_price = single.total_price_usd if single else None

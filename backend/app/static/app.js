@@ -1656,6 +1656,209 @@ function onStateMutated() {
   renderBuilder();
 }
 
+/* --- Optimization Progress Bar & Live Query Feed --- */
+let recentCompletedQueries = [];
+
+function estimateInitialQueryPlan(payload) {
+  const stops = payload.stops || [];
+  const legCount = stops.length + 1;
+  const maxSchedules =
+    payload.provider_mode === "serpapi" || payload.provider_mode === "fast_flights" ? 4 : 8;
+  const plannedQueries = [];
+
+  let curDate = payload.earliest_departure;
+  for (let i = 0; i < stops.length; i++) {
+    const prevAirports = i === 0 ? payload.origin_airports : stops[i - 1].airports;
+    const nextAirports = stops[i].airports;
+    const fromCode = (prevAirports && prevAirports[0]) || "ORIG";
+    const toCode = (nextAirports && nextAirports[0]) || "DEST";
+    const resolved = resolvePreviewCabin(fromCode, toCode, stops[i].outbound_cabin);
+    plannedQueries.push({
+      route: `${prevAirports.join(", ")} → ${nextAirports.join(", ")}`,
+      date: curDate,
+      cabin: formatCabinName(resolved.cabin),
+      label: `${prevAirports.join(", ")} → ${nextAirports.join(", ")} (${curDate} · ${formatCabinName(resolved.cabin)})`,
+    });
+    const d = new Date(`${curDate}T00:00:00`);
+    if (!isNaN(d)) {
+      d.setDate(d.getDate() + Number(stops[i].min_nights || 3));
+      curDate = d.toISOString().slice(0, 10);
+    }
+  }
+
+  const lastAirports = stops.length > 0 ? stops[stops.length - 1].airports : payload.origin_airports;
+  const destAirports = payload.destination_airports;
+  const retResolved = resolvePreviewCabin(
+    (lastAirports && lastAirports[0]) || "ORIG",
+    (destAirports && destAirports[0]) || "DEST",
+    payload.return_leg_cabin
+  );
+  const retDate = payload.earliest_return || payload.latest_return;
+  plannedQueries.push({
+    route: `${lastAirports.join(", ")} → ${destAirports.join(", ")}`,
+    date: retDate,
+    cabin: formatCabinName(retResolved.cabin),
+    label: `${lastAirports.join(", ")} → ${destAirports.join(", ")} (${retDate} · ${formatCabinName(retResolved.cabin)})`,
+  });
+
+  const hubExtra = payload.weights && payload.weights.enable_hub_splitting ? 4 : 0;
+  const estimatedTotal = Math.max(legCount, legCount * 2 + hubExtra);
+  return {
+    schedulesTotal: maxSchedules,
+    queriesTotal: estimatedTotal,
+    plannedQueries,
+  };
+}
+
+function showInitialOptimizationProgress(payload) {
+  recentCompletedQueries = [];
+  const panel = document.getElementById("optimizeProgress");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+
+  const plan = estimateInitialQueryPlan(payload);
+  const firstQuery = plan.plannedQueries[0]
+    ? `🔍 Querying ${plan.plannedQueries[0].label}…`
+    : "Preparing flight queries…";
+
+  const phaseEl = document.getElementById("optimizeProgressPhase");
+  const curQueryEl = document.getElementById("optimizeCurrentQuery");
+  const countsEl = document.getElementById("optimizeProgressCounts");
+  const pctEl = document.getElementById("optimizeProgressPct");
+  const fillEl = document.getElementById("optimizeProgressFill");
+  const barEl = document.getElementById("optimizeProgressBar");
+  const schedEl = document.getElementById("progressScheduleText");
+  const hitsEl = document.getElementById("progressCacheHitsText");
+  const liveEl = document.getElementById("progressLiveCallsText");
+  const recentEl = document.getElementById("progressRecentQueries");
+
+  if (phaseEl) {
+    phaseEl.textContent = "Generating candidate schedules & evaluating ticket splits…";
+  }
+  if (curQueryEl) {
+    curQueryEl.textContent = firstQuery;
+  }
+  if (countsEl) {
+    countsEl.textContent = `0 / ${plan.queriesTotal} queries`;
+  }
+  if (pctEl) {
+    pctEl.textContent = "5%";
+  }
+  if (fillEl) {
+    fillEl.style.width = "5%";
+  }
+  if (barEl) {
+    barEl.setAttribute("aria-valuenow", "5");
+  }
+  if (schedEl) {
+    schedEl.textContent = `📅 Schedule: 1 / ${plan.schedulesTotal}`;
+  }
+  if (hitsEl) {
+    hitsEl.textContent = "⚡ Cache hits: 0";
+  }
+  if (liveEl) {
+    liveEl.textContent = "🌐 Live queries: 0";
+  }
+  if (recentEl) {
+    recentEl.innerHTML = plan.plannedQueries
+      .slice(0, 4)
+      .map(
+        (q, idx) =>
+          `<span class="progress-query-chip ${idx === 0 ? "active" : ""}">${idx === 0 ? "🔄" : "⏳"} ${escapeHtml(q.route)} (${escapeHtml(q.date.slice(5))})</span>`
+      )
+      .join("");
+  }
+}
+
+function updateOptimizationProgressUI(ev) {
+  const panel = document.getElementById("optimizeProgress");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+
+  const pct = Math.max(0, Math.min(100, Number(ev.progress_pct ?? 5)));
+  const doneQ = Number(ev.queries_completed ?? 0);
+  const totalQ = Math.max(doneQ, Number(ev.queries_total ?? 1));
+  const schedIdx = Number(ev.schedule_index ?? 1);
+  const schedTotal = Math.max(schedIdx, Number(ev.schedules_total ?? 1));
+
+  const phaseEl = document.getElementById("optimizeProgressPhase");
+  const curQueryEl = document.getElementById("optimizeCurrentQuery");
+  const countsEl = document.getElementById("optimizeProgressCounts");
+  const pctEl = document.getElementById("optimizeProgressPct");
+  const fillEl = document.getElementById("optimizeProgressFill");
+  const barEl = document.getElementById("optimizeProgressBar");
+  const schedEl = document.getElementById("progressScheduleText");
+  const hitsEl = document.getElementById("progressCacheHitsText");
+  const liveEl = document.getElementById("progressLiveCallsText");
+  const recentEl = document.getElementById("progressRecentQueries");
+
+  if (phaseEl) {
+    if (ev.strategy_label) {
+      phaseEl.textContent = `Schedule ${schedIdx}/${schedTotal}${ev.schedule_route ? ` (${ev.schedule_route})` : ""} — ${ev.strategy_label}`;
+    } else {
+      phaseEl.textContent = `Optimizing Multi-City Schedules (${schedIdx}/${schedTotal})…`;
+    }
+  }
+
+  if (curQueryEl && ev.current_query) {
+    const prefix = ev.phase === "query_start" ? "🔍 Querying " : ev.phase === "query_done" ? "✓ Queried " : "⚙️ ";
+    curQueryEl.textContent = `${prefix}${ev.current_query}`;
+  }
+
+  if (countsEl) {
+    countsEl.textContent = `${doneQ} / ${totalQ} queries`;
+  }
+  if (pctEl) {
+    pctEl.textContent = `${pct}%`;
+  }
+  if (fillEl) {
+    fillEl.style.width = `${pct}%`;
+  }
+  if (barEl) {
+    barEl.setAttribute("aria-valuenow", String(pct));
+  }
+  if (schedEl) {
+    schedEl.textContent = `📅 Schedule: ${schedIdx} / ${schedTotal}`;
+  }
+  if (hitsEl) {
+    hitsEl.textContent = `⚡ Cache hits: ${ev.cache_hits ?? 0}`;
+  }
+  if (liveEl) {
+    liveEl.textContent = `🌐 Live queries: ${ev.live_calls ?? 0}`;
+  }
+
+  if (ev.last_query) {
+    recentCompletedQueries.unshift(ev.last_query);
+    recentCompletedQueries = recentCompletedQueries.slice(0, 4);
+  }
+
+  if (recentEl) {
+    const chips = [];
+    if (ev.phase === "query_start" && ev.current_query) {
+      chips.push(
+        `<span class="progress-query-chip active">🔄 ${escapeHtml(ev.current_query)}</span>`
+      );
+    }
+    recentCompletedQueries.slice(0, 4 - chips.length).forEach((q) => {
+      const icon = q.source === "cache" ? "⚡" : q.source === "live" ? "🌐" : "🧪";
+      const cls = q.source === "cache" ? "cache" : q.source === "live" ? "live" : "";
+      chips.push(
+        `<span class="progress-query-chip ${cls}">${icon} ${escapeHtml(q.route)} (${escapeHtml((q.date || "").slice(5))} · ${q.options_count ?? 0} flights)</span>`
+      );
+    });
+    if (chips.length > 0) {
+      recentEl.innerHTML = chips.join("");
+    }
+  }
+}
+
+function hideOptimizationProgress() {
+  const panel = document.getElementById("optimizeProgress");
+  if (panel) {
+    panel.classList.add("hidden");
+  }
+}
+
 /* --- Run Optimization & Render Results --- */
 async function runOptimization() {
   const btn = document.getElementById("optimizeBtn");
@@ -1685,17 +1888,69 @@ async function runOptimization() {
     force_refresh: document.getElementById("forceRefreshCheck").checked,
   };
 
+  showInitialOptimizationProgress(payload);
+
   try {
     const resp = await fetch("/api/optimize", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Stream-Progress": "1",
+      },
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       const errData = await resp.json();
       throw new Error(errData.detail ? JSON.stringify(errData.detail) : resp.statusText);
     }
-    const data = await resp.json();
+
+    const contentType = resp.headers.get("content-type") || "";
+    let data = null;
+
+    if (contentType.includes("application/x-ndjson") && resp.body) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          const msg = JSON.parse(line);
+          if (msg.type === "progress") {
+            updateOptimizationProgressUI(msg);
+          } else if (msg.type === "error") {
+            throw new Error(msg.detail || "Optimization failed");
+          } else if (msg.type === "result") {
+            data = msg.data;
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const msg = JSON.parse(buffer.trim());
+        if (msg.type === "progress") {
+          updateOptimizationProgressUI(msg);
+        } else if (msg.type === "error") {
+          throw new Error(msg.detail || "Optimization failed");
+        } else if (msg.type === "result") {
+          data = msg.data;
+        }
+      }
+    } else {
+      data = await resp.json();
+    }
+
+    if (!data) {
+      throw new Error("Optimization completed without returning results.");
+    }
+
     currentOptimizationResponse = data;
     selectedItineraryId = data.recommended.itinerary_id;
     setResultsStale(false);
@@ -1710,6 +1965,7 @@ async function runOptimization() {
       </div>
     `;
   } finally {
+    hideOptimizationProgress();
     btn.disabled = false;
     setResultsStale(resultsStale);
   }

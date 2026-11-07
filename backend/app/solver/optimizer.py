@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.data.airports import candidate_intermediate_hubs
 from backend.app.models.schemas import (
     EvaluatedItinerary,
     OptimizationResponse,
@@ -10,16 +11,24 @@ from backend.app.models.schemas import (
     StrategyKind,
     TripRequest,
 )
-from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
+from backend.app.providers.base import (
+    CachedFlightProvider,
+    FlightSearchProvider,
+    ProgressCallback,
+)
 from backend.app.providers.google_flights import CompositeFlightProvider
-from backend.app.solver.cabin import resolve_leg_max_stops
+from backend.app.solver.cabin import (
+    highest_cabin,
+    resolve_leg_cabin,
+    resolve_leg_max_stops,
+)
 from backend.app.solver.pareto import (
     annotate_badges,
     extract_pareto_frontier,
     is_dominated,
 )
 from backend.app.solver.partitioner import evaluate_all_partitions_for_schedule
-from backend.app.solver.route_dag import generate_candidate_schedules
+from backend.app.solver.route_dag import CandidateSchedule, generate_candidate_schedules
 
 __all__ = [
     "annotate_badges",
@@ -29,10 +38,65 @@ __all__ = [
 ]
 
 
+def _collect_planned_query_keys(
+    schedules: list[CandidateSchedule],
+    request: TripRequest,
+    cache: FlightCache,
+) -> set[str]:
+    """Pre-compute the distinct flight leg query keys planned across all candidate schedules."""
+    keys: set[str] = set()
+    for sched in schedules:
+        if not sched.legs:
+            continue
+        desired_cabins = [
+            resolve_leg_cabin(
+                leg.origin_airports[0],
+                leg.destination_airports[0],
+                leg.requested_cabin,
+                request.cabin_policy,
+            )
+            for leg in sched.legs
+        ]
+        uniform_cabin = highest_cabin(desired_cabins)
+
+        for leg_spec, leg_cabin in zip(sched.legs, desired_cabins, strict=False):
+            clean_origs = tuple(dict.fromkeys(o.strip().upper() for o in leg_spec.origin_airports if o.strip()))
+            clean_dests = tuple(dict.fromkeys(d.strip().upper() for d in leg_spec.destination_airports if d.strip()))
+            if not clean_origs or not clean_dests:
+                continue
+            if len(clean_origs) == 1 and len(clean_dests) == 1 and clean_origs[0] == clean_dests[0]:
+                continue
+            orig_key = ",".join(clean_origs)
+            dest_key = ",".join(clean_dests)
+            keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, uniform_cabin))
+            keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, leg_cabin))
+
+        if request.weights.enable_hub_splitting and len(sched.legs) >= 2:
+            first_spec = sched.legs[0]
+            orig_code = first_spec.origin_airports[0].strip().upper()
+            first_dest_code = first_spec.destination_airports[0].strip().upper()
+            first_max_stops = resolve_leg_max_stops(
+                orig_code, first_dest_code, first_spec.requested_stops, request.stops_policy
+            )
+            if first_max_stops != 0:
+                for hub_code in candidate_intermediate_hubs(orig_code, first_dest_code, max_hubs=2):
+                    if hub_code in first_spec.destination_airports or hub_code in first_spec.origin_airports:
+                        continue
+                    cabin_0a = resolve_leg_cabin(orig_code, hub_code, first_spec.requested_cabin, request.cabin_policy)
+                    cabin_0b = resolve_leg_cabin(
+                        hub_code, first_dest_code, first_spec.requested_cabin, request.cabin_policy
+                    )
+                    keys.add(cache.make_leg_key(orig_code, hub_code, first_spec.departure_date, cabin_0a))
+                    keys.add(cache.make_leg_key(hub_code, first_dest_code, first_spec.departure_date, cabin_0b))
+
+    return keys
+
+
 def optimize_trip(
     request: TripRequest,
     raw_provider: FlightSearchProvider,
     cache: FlightCache,
+    progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResponse:
     """Run schedule DAG generation, cached flight search, ticket partitioning, and Pareto ranking."""
     cache.reset_session_counters()
@@ -42,12 +106,6 @@ def optimize_trip(
             mode=request.provider_mode,
             max_api_calls=request.max_api_calls_per_run,
         )
-
-    cached_provider = CachedFlightProvider(
-        delegate=raw_provider,
-        cache=cache,
-        force_refresh=request.force_refresh,
-    )
 
     warnings: list[str] = []
     if request.provider_mode == ProviderMode.OFFLINE:
@@ -68,10 +126,47 @@ def optimize_trip(
             "showing the closest feasible schedule within your trip window."
         )
 
+    planned_keys = _collect_planned_query_keys(schedules, request, cache)
+    cached_provider = CachedFlightProvider(
+        delegate=raw_provider,
+        cache=cache,
+        force_refresh=request.force_refresh,
+        progress_callback=progress_callback,
+        planned_query_keys=planned_keys,
+    )
+    cached_provider.schedules_total = max(1, len(schedules))
+    cached_provider.strategies_total = max(1, len(schedules) * 5)
+
+    cached_provider.emit_progress(
+        phase="init",
+        current_query=f"Generated {len(schedules)} candidate schedule(s) · {len(planned_keys)} flight queries planned",
+        progress_pct=3,
+    )
+
     all_evaluated: list[EvaluatedItinerary] = []
 
-    for sched in schedules:
-        partitions = evaluate_all_partitions_for_schedule(sched, request, cached_provider)
+    for sched_idx, sched in enumerate(schedules, start=1):
+        route_codes = [sched.legs[0].origin_airports[0]] + [leg.destination_airports[0] for leg in sched.legs]
+        cached_provider.schedule_index = sched_idx
+        cached_provider.current_schedule_route = " → ".join(route_codes)
+
+        def _on_strategy_start(strategy_label: str) -> None:
+            cached_provider.current_strategy_label = strategy_label
+            cached_provider.emit_progress(
+                phase="strategy",
+                current_query=f"Evaluating {strategy_label} ({cached_provider.current_schedule_route})",
+            )
+
+        def _on_strategy_done(_strategy_label: str) -> None:
+            cached_provider.strategies_completed += 1
+
+        partitions = evaluate_all_partitions_for_schedule(
+            sched,
+            request,
+            cached_provider,
+            on_strategy_start=_on_strategy_start,
+            on_strategy_done=_on_strategy_done,
+        )
         all_evaluated.extend(partitions)
 
     if isinstance(raw_provider, CompositeFlightProvider) and raw_provider.warnings:
@@ -123,6 +218,13 @@ def optimize_trip(
                     f"No {limit_label} flight was available for {leg.origin}→{leg.destination} on "
                     f"{leg.departure_date.isoformat()}; relaxed to {leg.stops_count} stop(s)."
                 )
+
+    cached_provider.planned_query_keys = set(cached_provider.completed_query_keys)
+    cached_provider.emit_progress(
+        phase="complete",
+        current_query="Ranked Pareto-optimal itineraries & ticket partitions",
+        progress_pct=100,
+    )
 
     return OptimizationResponse(
         recommended=recommended,

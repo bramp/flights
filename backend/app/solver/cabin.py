@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.app.data.airports import estimate_nonstop_hours
+from backend.app.data.airports import estimate_nonstop_hours, get_airport
 from backend.app.models.schemas import (
     CabinClass,
     CabinPolicy,
@@ -57,14 +57,28 @@ def resolve_leg_max_stops(
     destination: str,
     requested_stops: StopsMode,
     policy: StopsPolicy,
+    options: list[FlightLegOption] | None = None,
 ) -> int | None:
     """Resolve a leg's maximum allowed stops using either its explicit override or the duration rule.
+    Uses actual flight durations from `options` when available (especially if airport coordinates are unknown).
     Returns 0 for Nonstop, 1 for <=1 Stop, or None for Any stops.
     """
     if requested_stops != StopsMode.AUTO:
         return _stops_mode_to_limit(ConcreteStopsMode(requested_stops.value))
 
-    est_hours = estimate_nonstop_hours(origin, destination)
+    est_hours: float | None = None
+    if options:
+        nonstop_durs = [o.duration_hours for o in options if o.stops_count == 0 and o.duration_hours > 0]
+        if nonstop_durs:
+            est_hours = min(nonstop_durs)
+        elif not get_airport(origin).has_coordinates or not get_airport(destination).has_coordinates:
+            air_durs = [max(0.5, o.duration_hours - o.layover_hours) for o in options if o.duration_hours > 0]
+            if air_durs:
+                est_hours = min(air_durs)
+
+    if est_hours is None:
+        est_hours = estimate_nonstop_hours(origin, destination)
+
     if est_hours < policy.nonstop_threshold_hours:
         return _stops_mode_to_limit(policy.short_haul_stops)
     return _stops_mode_to_limit(policy.long_haul_stops)

@@ -80,7 +80,7 @@ def test_live_search_never_falls_back_to_simulation(
     provider = CompositeFlightProvider(mode=mode, max_api_calls=0 if failure == "budget" else 25)
     provider.serpapi_key = "test-key"
 
-    def unavailable(*args: object) -> list[FlightLegOption]:
+    def unavailable(*_args: object) -> list[FlightLegOption]:
         if failure == "error":
             raise RuntimeError("Live provider unavailable")
         return []
@@ -113,7 +113,8 @@ def test_simulation_bypasses_real_cache_and_never_persists(tmp_path: Path, monke
         provider = CachedFlightProvider(delegate, cache)
         single = provider.search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
         batch = provider.search_leg_batch(("SFO",), ("LHR",), departure, ConcreteCabinClass.BUSINESS)
-        assert single and batch
+        assert single
+        assert batch
         assert all(option.provider == "pricing_engine" and not option.from_cache for option in single + batch)
         assert provider.quote_multi_slice_ticket(single[:2], TicketType.OPEN_JAW) > 0
     after = cache.get_stats()
@@ -157,7 +158,8 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
         )
     cache = FlightCache(cache.db_path)
     results = cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    assert results and len(results) == len(live) - 1
+    assert results
+    assert len(results) == len(live) - 1
     assert all(option.provider == "fast_flights" for option in results)
     assert cache.get_ticket_quote("legacy-quote") is None
     assert cache.get_ticket_quote("live-quote") == {"providers": ["fast_flights"], "base_fare_usd": 200}

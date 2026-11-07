@@ -146,8 +146,7 @@ class CityStopSpec(BaseModel):
         self.airports = [code.strip().upper() for code in self.airports if code.strip()]
         if not self.airports:
             raise ValueError("At least one airport code must be provided for each stop.")
-        if self.max_nights < self.min_nights:
-            self.max_nights = self.min_nights
+        self.max_nights = max(self.max_nights, self.min_nights)
         return self
 
 

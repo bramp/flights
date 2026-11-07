@@ -12,10 +12,14 @@ from backend.app.models.schemas import (
     CabinPolicy,
     CityStopSpec,
     ConcreteCabinClass,
+    FlightLegOption,
+    FlightSegment,
     StopsMode,
     StrategyKind,
+    TicketType,
     TripRequest,
 )
+from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.providers.pricing_engine import RealisticPricingProvider
 from backend.app.solver.optimizer import optimize_trip
@@ -219,3 +223,79 @@ def test_greece_london_auto_stops_keeps_ath_jtr_direct_and_warns_when_relaxed(
     req.stops[0].outbound_stops = StopsMode.NONSTOP
     resp_relaxed = optimize_trip(req, raw_provider=provider, cache=cache)
     assert any("relaxed to 1 stop" in w for w in resp_relaxed.warnings)
+
+
+def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_not(
+    tmp_path: Path,
+) -> None:
+    class UnalignedCarrierProvider(FlightSearchProvider):
+        def search_leg(
+            self,
+            origin: str,
+            destination: str,
+            departure_date: date,
+            cabin: ConcreteCabinClass,
+        ) -> list[FlightLegOption]:
+            airline = "EK" if (origin == "SFO" or destination == "SFO") else "GQ"
+            airline_name = "Emirates" if airline == "EK" else "SKY express"
+            return [
+                FlightLegOption(
+                    leg_id=f"{origin}-{destination}-{departure_date.isoformat()}-{airline}",
+                    origin=origin,
+                    destination=destination,
+                    departure_date=departure_date,
+                    cabin=cabin,
+                    airline=airline,
+                    airline_name=airline_name,
+                    alliance="Non-Aligned",
+                    flight_numbers=[f"{airline}101"],
+                    segments=[
+                        FlightSegment(
+                            origin=origin,
+                            destination=destination,
+                            departure_date=departure_date,
+                            airline=airline,
+                            airline_name=airline_name,
+                            alliance="Non-Aligned",
+                            flight_number=f"{airline}101",
+                            duration_hours=2.0,
+                            cabin=cabin,
+                        )
+                    ],
+                    duration_hours=2.0,
+                    stops_count=0,
+                    one_way_base_fare_usd=1000.0 if airline == "EK" else 80.0,
+                    round_trip_half_fare_usd=650.0 if airline == "EK" else 80.0,
+                    bag_fee_per_checked_bag_usd=0.0,
+                    provider="fast_flights",
+                )
+            ]
+
+    prov = UnalignedCarrierProvider()
+    leg_ek_out = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)[0]
+    leg_ek_ret = prov.search_leg("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS)[0]
+    leg_gq_mid = prov.search_leg("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)[0]
+
+    # Same unaligned carrier (EK + EK) gets combined Open-Jaw RT half-fare ($650 + $650 = $1300)
+    assert prov.quote_multi_slice_ticket([leg_ek_out, leg_ek_ret], TicketType.OPEN_JAW) == 1300.0
+    # Different unaligned carriers (EK + GQ) do NOT get combined discount ($1000 + $80 = $1080)
+    assert prov.quote_multi_slice_ticket([leg_ek_out, leg_gq_mid], TicketType.OPEN_JAW) == 1080.0
+
+    req = TripRequest(
+        origin_label="San Francisco",
+        origin_airports=["SFO"],
+        destination_label="San Francisco",
+        destination_airports=["SFO"],
+        earliest_departure=date(2026, 12, 11),
+        latest_return=date(2026, 12, 20),
+        stops=[
+            CityStopSpec(id="s1", label="Athens", airports=["ATH"], min_nights=4, max_nights=4),
+            CityStopSpec(id="s2", label="London", airports=["LHR"], min_nights=5, max_nights=5),
+        ],
+    )
+    resp = optimize_trip(req, raw_provider=prov, cache=FlightCache(tmp_path / "unaligned.db"))
+    by_strategy = {it.strategy: it for it in resp.strategy_comparison}
+    assert StrategyKind.OPEN_JAW_PLUS_REGIONAL in by_strategy
+    oj = by_strategy[StrategyKind.OPEN_JAW_PLUS_REGIONAL]
+    assert oj.tickets[0].airline_or_alliance == "Emirates"
+    assert oj.tickets[0].base_fare_usd == 1300.0

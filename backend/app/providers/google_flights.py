@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.data.airports import (
+    record_observed_duration,
+    register_discovered_airport,
+)
 from backend.app.models.schemas import (
     ConcreteCabinClass,
     FlightLegOption,
@@ -105,56 +111,28 @@ ALLIANCE_BY_IATA_CODE: dict[str, str] = {
     code: alliance for alliance, codes in _ALLIANCE_ROSTERS.items() for code in codes
 }
 
-# Fallback carrier name -> IATA code when fast-flights returns type="multi"
-_NAME_TO_IATA: tuple[tuple[str, str], ...] = (
-    ("aegean", "A3"),
-    ("air canada", "AC"),
-    ("austrian", "OS"),
-    ("brussels", "SN"),
-    ("lufthansa", "LH"),
-    ("swiss", "LX"),
-    ("tap air portugal", "TP"),
-    ("turkish", "TK"),
-    ("united", "UA"),
-    ("ana", "NH"),
-    ("singapore", "SQ"),
-    ("eva air", "BR"),
-    ("american", "AA"),
-    ("alaska", "AS"),
-    ("british airways", "BA"),
-    ("cathay", "CX"),
-    ("finnair", "AY"),
-    ("iberia", "IB"),
-    ("japan airlines", "JL"),
-    ("qantas", "QF"),
-    ("qatar", "QR"),
-    ("royal jordanian", "RJ"),
-    ("aer lingus", "EI"),
-    ("air france", "AF"),
-    ("delta", "DL"),
-    ("klm", "KL"),
-    ("virgin atlantic", "VS"),
-    ("ita", "AZ"),
-    ("sas", "SK"),
-    ("korean air", "KE"),
-    ("china airlines", "CI"),
-    ("easyjet", "U2"),
-    ("ryanair", "FR"),
-    ("wizz", "W6"),
-    ("vueling", "VY"),
-    ("jetblue", "B6"),
-    ("southwest", "WN"),
-    ("sky express", "GQ"),
-    ("zipair", "ZG"),
-    ("airasia", "AK"),
-    ("scoot", "TR"),
-    ("norwegian", "DY"),
-)
+# Dynamically populated from Google Flights response metadata (e.g. ResultList.metadata.airlines and SerpApi flight_number)
+DISCOVERED_AIRLINE_CODES_BY_NAME: dict[str, str] = {}
+
+
+def register_discovered_airline(code: str, name: str) -> None:
+    """Register an airline's 2-letter IATA code and display name extracted from a flight search response."""
+    clean_code = code.strip().upper()
+    clean_name = name.strip().lower()
+    if len(clean_code) == 2 and clean_code.isalnum() and clean_name:
+        DISCOVERED_AIRLINE_CODES_BY_NAME[clean_name] = clean_code
 
 
 def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str, str, bool, float]:
     """Return (code, alliance, is_lcc, default_bag_fee) from live carrier code or name."""
     code = airline_code.strip().upper()
+    if code and airline_name:
+        register_discovered_airline(code, airline_name)
+
+    lower_name = airline_name.strip().lower()
+    if not code and lower_name in DISCOVERED_AIRLINE_CODES_BY_NAME:
+        code = DISCOVERED_AIRLINE_CODES_BY_NAME[lower_name]
+
     if code in AIRLINE_METADATA_BY_CODE:
         alliance, is_lcc, bag_fee = AIRLINE_METADATA_BY_CODE[code]
         return code, alliance, is_lcc, bag_fee
@@ -164,16 +142,15 @@ def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str,
         is_lcc = alliance == "LCC"
         return code, alliance, is_lcc, (50.0 if is_lcc else 40.0)
 
-    lower_name = airline_name.strip().lower()
     for known_name, (k_code, alliance, is_lcc, bag_fee) in AIRLINE_METADATA_BY_NAME.items():
-        if known_name in lower_name or lower_name in known_name:
+        if known_name in lower_name or (lower_name and lower_name in known_name):
             return (code or k_code), alliance, is_lcc, bag_fee
 
-    for frag, f_code in _NAME_TO_IATA:
-        if frag in lower_name:
-            alliance = ALLIANCE_BY_IATA_CODE.get(f_code, "Non-Aligned")
+    for disc_name, disc_code in DISCOVERED_AIRLINE_CODES_BY_NAME.items():
+        if disc_name in lower_name or (lower_name and lower_name in disc_name):
+            alliance = ALLIANCE_BY_IATA_CODE.get(disc_code, "Non-Aligned")
             is_lcc = alliance == "LCC"
-            return (code or f_code), alliance, is_lcc, (50.0 if is_lcc else 40.0)
+            return (code or disc_code), alliance, is_lcc, (50.0 if is_lcc else 40.0)
 
     fallback_code = code if len(code) == 2 else (airline_name[:2].upper() if airline_name else "FL")
     return fallback_code, "Non-Aligned", False, 45.0
@@ -278,7 +255,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                 live = self._search_serpapi_google_flights(orig_csv, dest_csv, departure_date, cabin)
                 if live:
                     return live
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.warnings.append(f"SerpApi query ({origins[0]}→{destinations[0]}) failed: {exc}")
 
         # In FAST_FLIGHTS or AUTO mode, query the primary airport pair first (to avoid N*M explosion),
@@ -312,26 +289,24 @@ class CompositeFlightProvider(FlightSearchProvider):
                 raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
             return self.fallback.search_leg(origin, destination, departure_date, cabin)
 
-        if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
-            if self._can_make_live_call():
-                try:
-                    ff_results = self._search_fast_flights(origin, destination, departure_date, cabin)
-                    if ff_results:
-                        return ff_results
-                except Exception as exc:
-                    if self.mode == ProviderMode.FAST_FLIGHTS:
-                        self.warnings.append(
-                            f"fast-flights query ({origin}→{destination} on {departure_date}) failed: {exc}"
-                        )
+        if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO) and self._can_make_live_call():
+            try:
+                ff_results = self._search_fast_flights(origin, destination, departure_date, cabin)
+                if ff_results:
+                    return ff_results
+            except Exception as exc:  # noqa: BLE001
+                if self.mode == ProviderMode.FAST_FLIGHTS:
+                    self.warnings.append(
+                        f"fast-flights query ({origin}→{destination} on {departure_date}) failed: {exc}"
+                    )
 
-        if self.mode in (ProviderMode.SERPAPI, ProviderMode.AUTO) and self.serpapi_key:
-            if self._can_make_live_call():
-                try:
-                    serp_results = self._search_serpapi_google_flights(origin, destination, departure_date, cabin)
-                    if serp_results:
-                        return serp_results
-                except Exception as exc:
-                    self.warnings.append(f"SerpApi query ({origin}→{destination} on {departure_date}) failed: {exc}")
+        if self.mode in (ProviderMode.SERPAPI, ProviderMode.AUTO) and self.serpapi_key and self._can_make_live_call():
+            try:
+                serp_results = self._search_serpapi_google_flights(origin, destination, departure_date, cabin)
+                if serp_results:
+                    return serp_results
+            except Exception as exc:  # noqa: BLE001
+                self.warnings.append(f"SerpApi query ({origin}→{destination} on {departure_date}) failed: {exc}")
 
         return []
 
@@ -342,8 +317,6 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
-        from fast_flights import FlightQuery, Passengers, create_query, get_flights
-
         seat_map: dict[ConcreteCabinClass, Any] = {
             ConcreteCabinClass.ECONOMY: "economy",
             ConcreteCabinClass.PREMIUM_ECONOMY: "premium-economy",
@@ -381,23 +354,23 @@ class CompositeFlightProvider(FlightSearchProvider):
         )
 
     @staticmethod
-    def _select_diverse_by_stops(
-        items: list[Any],
-        stops_fn: Any,
-        price_fn: Any,
+    def _select_diverse_by_stops[T](
+        items: list[T],
+        stops_fn: Callable[[T], int],
+        price_fn: Callable[[T], float],
         max_total: int = 15,
-    ) -> list[Any]:
+    ) -> list[T]:
         """Preserve top options across each stops bucket (nonstop, 1-stop, 2+-stop) before capping,
         so direct and 1-stop flights are never truncated by cheaper multi-stop itineraries.
         """
-        buckets: dict[int, list[Any]] = {0: [], 1: [], 2: []}
+        buckets: dict[int, list[T]] = {0: [], 1: [], 2: []}
         for item in items:
             s = min(2, max(0, int(stops_fn(item))))
             buckets[s].append(item)
-        for s in buckets:
-            buckets[s].sort(key=price_fn)
+        for bucket in buckets.values():
+            bucket.sort(key=price_fn)
 
-        selected: list[Any] = []
+        selected: list[T] = []
         # Take up to 5 from each bucket first (prioritizing nonstop and 1-stop)
         for s in (0, 1, 2):
             selected.extend(buckets[s][:5])
@@ -419,7 +392,16 @@ class CompositeFlightProvider(FlightSearchProvider):
         if not results:
             return []
 
-        valid_items = [
+        # Extract airline code -> name mappings directly from Google Flights response metadata
+        meta = getattr(results, "metadata", None)
+        airlines_meta: list[Any] = getattr(meta, "airlines", None) or []
+        for airline_meta in airlines_meta:
+            m_code = str(getattr(airline_meta, "code", "") or "")
+            m_name = str(getattr(airline_meta, "name", "") or "")
+            if m_code and m_name:
+                register_discovered_airline(m_code, m_name)
+
+        valid_items: list[Any] = [
             item for item in results if getattr(item, "price", None) and (getattr(item, "flights", None) or [])
         ]
         diverse_items = CompositeFlightProvider._select_diverse_by_stops(
@@ -432,8 +414,8 @@ class CompositeFlightProvider(FlightSearchProvider):
         options: list[FlightLegOption] = []
         for idx, item in enumerate(diverse_items):
             price_val = getattr(item, "price", None)
-            raw_flights = getattr(item, "flights", None) or []
-            airlines_list = getattr(item, "airlines", None) or []
+            raw_flights: list[Any] = getattr(item, "flights", None) or []
+            airlines_list: list[Any] = getattr(item, "airlines", None) or []
             if not price_val or not raw_flights:
                 continue
 
@@ -442,20 +424,33 @@ class CompositeFlightProvider(FlightSearchProvider):
             raw_type = str(getattr(item, "type", "") or "").strip().upper()
             type_code = raw_type if len(raw_type) == 2 and raw_type.isalnum() else ""
             carrier_code, alliance, is_lcc, bag_fee = resolve_airline_metadata(type_code, primary_airline_name)
+            if len(airlines_list) > 1:
+                resolved_all = [resolve_airline_metadata("", str(a)) for a in airlines_list if str(a).strip()]
+                alliances_set = {r[1] for r in resolved_all}
+                if any(r[2] for r in resolved_all):
+                    is_lcc = True
+                    alliance = "LCC"
+                elif len(alliances_set) > 1:
+                    alliance = "Non-Aligned"
             if not is_lcc and cabin in (ConcreteCabinClass.BUSINESS, ConcreteCabinClass.FIRST):
                 bag_fee = 0.0
 
             segments: list[FlightSegment] = []
             flight_numbers: list[str] = []
             for seg_idx, sf in enumerate(raw_flights):
-                dep_code = str(getattr(getattr(sf, "from_airport", None), "code", "") or origin)
-                arr_code = str(getattr(getattr(sf, "to_airport", None), "code", "") or destination)
+                from_ap = getattr(sf, "from_airport", None)
+                to_ap = getattr(sf, "to_airport", None)
+                dep_code = str(getattr(from_ap, "code", "") or origin)
+                arr_code = str(getattr(to_ap, "code", "") or destination)
+                register_discovered_airport(dep_code, str(getattr(from_ap, "name", "") or ""))
+                register_discovered_airport(arr_code, str(getattr(to_ap, "name", "") or ""))
                 dep_time_tuple = getattr(getattr(sf, "departure", None), "time", (9, 0))
                 arr_time_tuple = getattr(getattr(sf, "arrival", None), "time", (17, 0))
                 dep_hm = f"{int(dep_time_tuple[0]):02d}:{int(dep_time_tuple[1]):02d}"
                 arr_hm = f"{int(arr_time_tuple[0]):02d}:{int(arr_time_tuple[1]):02d}"
                 dur_min = float(getattr(sf, "duration", 60) or 60)
                 seg_dur_hrs = round(dur_min / 60.0, 2)
+                record_observed_duration(dep_code, arr_code, seg_dur_hrs)
                 fn_code = f"{carrier_code}{100 + idx * 10 + seg_idx}"
                 flight_numbers.append(fn_code)
 
@@ -480,7 +475,8 @@ class CompositeFlightProvider(FlightSearchProvider):
             actual_dest = segments[-1].destination
             stops_count = max(0, len(segments) - 1)
             layover_airports = [s.destination for s in segments[:-1]]
-            flight_hrs = sum(s.duration_hours for s in segments)
+            flight_hrs = round(sum(s.duration_hours for s in segments), 2)
+            record_observed_duration(actual_orig, actual_dest, flight_hrs)
             layover_hours = round(stops_count * 1.75, 2)
             total_hours = round(flight_hrs + layover_hours, 2)
             rt_half = ow_price if is_lcc else round(ow_price * 0.76, 2)
@@ -570,14 +566,18 @@ class CompositeFlightProvider(FlightSearchProvider):
         Extracts real segments, layover hubs, durations, flight numbers, and fares directly
         from the response payload without relying on synthetic hub or region tables.
         """
-        flights_raw: list[dict[str, Any]] = (data.get("best_flights") or []) + (data.get("other_flights") or [])
+        best_raw: list[dict[str, Any]] = data.get("best_flights") or []
+        other_raw: list[dict[str, Any]] = data.get("other_flights") or []
+        flights_raw: list[dict[str, Any]] = best_raw + other_raw
         if not flights_raw:
             return []
 
-        fallback_orig = origin.split(",")[0].strip().upper()
-        fallback_dest = destination.split(",")[0].strip().upper()
+        fallback_orig = origin.split(",", maxsplit=1)[0].strip().upper()
+        fallback_dest = destination.split(",", maxsplit=1)[0].strip().upper()
 
-        valid_raw = [item for item in flights_raw if item.get("price") is not None and (item.get("flights") or [])]
+        valid_raw: list[dict[str, Any]] = [
+            item for item in flights_raw if item.get("price") is not None and (item.get("flights") or [])
+        ]
         diverse_raw = CompositeFlightProvider._select_diverse_by_stops(
             valid_raw,
             stops_fn=lambda it: max(0, len(it.get("flights") or []) - 1),
@@ -609,15 +609,18 @@ class CompositeFlightProvider(FlightSearchProvider):
             segments: list[FlightSegment] = []
             flight_numbers: list[str] = []
             for seg in raw_segments:
-                dep_airport = str((seg.get("departure_airport") or {}).get("id") or fallback_orig)
-                arr_airport = str(
-                    (seg.get("destination_airport") or seg.get("arrival_airport") or {}).get("id") or fallback_dest
-                )
-                dep_time_full = str((seg.get("departure_airport") or {}).get("time") or "09:00")
-                arr_time_full = str((seg.get("arrival_airport") or {}).get("time") or "17:00")
-                dep_hm = dep_time_full.split(" ")[-1][:5]
-                arr_hm = arr_time_full.split(" ")[-1][:5]
+                dep_info: dict[str, Any] = seg.get("departure_airport") or {}
+                arr_info: dict[str, Any] = seg.get("destination_airport") or seg.get("arrival_airport") or {}
+                dep_airport = str(dep_info.get("id") or fallback_orig)
+                arr_airport = str(arr_info.get("id") or fallback_dest)
+                register_discovered_airport(dep_airport, str(dep_info.get("name") or ""))
+                register_discovered_airport(arr_airport, str(arr_info.get("name") or ""))
+                dep_time_full = str(dep_info.get("time") or "09:00")
+                arr_time_full = str(arr_info.get("time") or "17:00")
+                dep_hm = dep_time_full.rsplit(" ", maxsplit=1)[-1][:5]
+                arr_hm = arr_time_full.rsplit(" ", maxsplit=1)[-1][:5]
                 seg_dur_hrs = round(float(seg.get("duration") or 60.0) / 60.0, 2)
+                record_observed_duration(dep_airport, arr_airport, seg_dur_hrs)
                 fn_clean = str(seg.get("flight_number") or f"{carrier_code}{100 + idx}").replace(" ", "")
                 flight_numbers.append(fn_clean)
 
@@ -638,17 +641,22 @@ class CompositeFlightProvider(FlightSearchProvider):
                     )
                 )
 
+            for lay in raw_layovers:
+                lay_id = str(lay.get("id") or "")
+                if lay_id:
+                    register_discovered_airport(lay_id, str(lay.get("name") or ""))
+
             actual_orig = segments[0].origin
             actual_dest = segments[-1].destination
             layover_airports = [str(lay.get("id")) for lay in raw_layovers if lay.get("id")]
             if not layover_airports and len(segments) > 1:
                 layover_airports = [s.destination for s in segments[:-1]]
 
+            flight_hrs = round(sum(s.duration_hours for s in segments), 2)
+            record_observed_duration(actual_orig, actual_dest, flight_hrs)
             layover_hours = round(sum(float(lay.get("duration") or 0.0) for lay in raw_layovers) / 60.0, 2)
             total_hours = (
-                round(total_duration_min / 60.0, 2)
-                if total_duration_min > 0
-                else round(sum(s.duration_hours for s in segments) + layover_hours, 2)
+                round(total_duration_min / 60.0, 2) if total_duration_min > 0 else round(flight_hrs + layover_hours, 2)
             )
             stops_count = max(0, len(segments) - 1)
 

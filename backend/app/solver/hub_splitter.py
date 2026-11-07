@@ -128,9 +128,17 @@ def evaluate_hub_split_candidates(
         best_0a = min(opts_0a, key=lambda o: leg_generalized_cost(o, request, True))
         best_0b = min(opts_0b, key=lambda o: leg_generalized_cost(o, request, False))
 
-        matching_last = [o for o in last_opts if o.alliance == best_0a.alliance and not o.is_lcc]
+        matching_last = [
+            o
+            for o in last_opts
+            if not o.is_lcc
+            and (
+                (best_0a.alliance in ("Star Alliance", "Oneworld", "SkyTeam") and o.alliance == best_0a.alliance)
+                or (o.airline and o.airline.upper() == best_0a.airline.upper())
+            )
+        ]
         best_last = min(
-            matching_last if matching_last else last_opts,
+            matching_last or last_opts,
             key=lambda o: leg_generalized_cost(o, request, bool(matching_last)),
         )
 
