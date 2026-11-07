@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     EvaluatedItinerary,
     OptimizationResponse,
@@ -68,10 +69,8 @@ def _collect_planned_query_keys(
                 continue
             if len(clean_origs) == 1 and len(clean_dests) == 1 and clean_origs[0] == clean_dests[0]:
                 continue
-            orig_key = ",".join(clean_origs)
-            dest_key = ",".join(clean_dests)
-            keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, uniform_cabin))
-            keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, leg_cabin))
+            keys.add(cache.make_leg_key(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, uniform_cabin)))
+            keys.add(cache.make_leg_key(LegSearch(clean_origs, clean_dests, leg_spec.departure_date, leg_cabin)))
 
     return keys
 

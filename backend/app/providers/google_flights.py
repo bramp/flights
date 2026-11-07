@@ -19,6 +19,7 @@ from backend.app.data.airports import (
     record_observed_duration,
     register_discovered_airport,
 )
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     BaggageConfig,
     ConcreteCabinClass,
@@ -325,68 +326,68 @@ class CompositeFlightProvider(FlightSearchProvider):
             return False
         return True
 
-    def search_leg_batch(
-        self,
-        origins: tuple[str, ...],
-        destinations: tuple[str, ...],
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
+    def search(self, query: LegSearch) -> list[FlightLegOption]:
         """Batch multiple origins and destinations into a single query when using SerpApi,
         or query primary airport pairs when using fast-flights to conserve requests.
         """
-        if self.mode == ProviderMode.OFFLINE:
-            return super().search_leg_batch(origins, destinations, departure_date, cabin)
+        origins = query.origins
+        destinations = query.destinations
+        departure_date = query.departure_date
+        cabin = query.cabin
+        pairs = [(orig, dest) for orig in origins for dest in destinations if orig != dest]
+        if not pairs:
+            return []
 
-        # In SERPAPI mode, SerpApi supports comma-separated IATA codes in a single request!
+        if self.mode == ProviderMode.OFFLINE:
+            if os.environ.get("FARESPLIT_TESTING") != "1":
+                raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
+            return self.fallback.search(query)
+
         if self.mode == ProviderMode.SERPAPI:
             if not self.serpapi_key:
                 self.warnings.append("SERPAPI mode selected, but SERPAPI_KEY is not set in .env or environment.")
-                return super().search_leg_batch(origins, destinations, departure_date, cabin)
+                return []
             if not self._can_make_live_call():
-                return super().search_leg_batch(origins, destinations, departure_date, cabin)
+                return []
             try:
                 orig_csv = ",".join(origins)
                 dest_csv = ",".join(destinations)
-                if orig_csv == dest_csv and len(origins) == 1:
-                    return []
                 live = self._search_serpapi_google_flights(orig_csv, dest_csv, departure_date, cabin)
                 if live:
                     return live
             except Exception as exc:  # noqa: BLE001
                 self.warnings.append(f"SerpApi query ({origins[0]}→{destinations[0]}) failed: {exc}")
 
-        # In FAST_FLIGHTS or AUTO mode, query the primary airport pair first (to avoid N*M explosion),
-        # plus secondary pairs only if budget remains.
+            if len(origins) == len(destinations) == 1:
+                return []
+            return [option for orig, dest in pairs for option in self._search_pair(orig, dest, departure_date, cabin)]
+
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
             results: list[FlightLegOption] = []
-            # Prioritize primary origin -> primary destination first
-            pairs = [(o, d) for o in origins[:2] for d in destinations[:2] if o.upper() != d.upper()]
-            for orig, dest in pairs:
-                results.extend(self.search_leg(orig, dest, departure_date, cabin))
-                # If primary pair already returned plenty of options in live mode, avoid burning extra calls
+            primary_pairs = [(o, d) for o in origins[:2] for d in destinations[:2] if o != d]
+            for orig, dest in primary_pairs:
+                results.extend(self._search_pair(orig, dest, departure_date, cabin))
                 if len(results) >= 4:
                     break
             if results:
                 return results
 
-        return super().search_leg_batch(origins, destinations, departure_date, cabin)
+            return [
+                option
+                for orig, dest in pairs
+                if (orig, dest) not in primary_pairs
+                for option in self._search_pair(orig, dest, departure_date, cabin)
+            ]
 
-    def search_leg(
+        return []
+
+    def _search_pair(
         self,
         origin: str,
         destination: str,
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
-        if origin.upper() == destination.upper():
-            return []
-
-        if self.mode == ProviderMode.OFFLINE:
-            if os.environ.get("FARESPLIT_TESTING") != "1":
-                raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
-            return self.fallback.search_leg(origin, destination, departure_date, cabin)
-
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO) and self._can_make_live_call():
             try:
                 ff_results = self._search_fast_flights(origin, destination, departure_date, cabin)

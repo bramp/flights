@@ -21,6 +21,7 @@ from backend.app.data.airports import (
     same_metro_area,
     suggest_airports,
 )
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     BaggageConfig,
     CabinClass,
@@ -139,10 +140,10 @@ def test_build_google_flights_url_encodes_slices_trip_type_cabin_and_baggage() -
     assert build_google_flights_url([], TicketType.ONE_WAY) == "https://www.google.com/travel/flights"
 
     prov = RealisticPricingProvider()
-    sfo_lhr = prov.search_leg("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)[0]
-    lhr_sfo = prov.search_leg("LHR", "SFO", date(2026, 11, 20), ConcreteCabinClass.BUSINESS)[0]
-    cdg_sfo = prov.search_leg("CDG", "SFO", date(2026, 11, 20), ConcreteCabinClass.ECONOMY)[0]
-    lhr_cdg = prov.search_leg("LHR", "CDG", date(2026, 11, 15), ConcreteCabinClass.ECONOMY)[0]
+    sfo_lhr = prov.search(LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS))[0]
+    lhr_sfo = prov.search(LegSearch.single("LHR", "SFO", date(2026, 11, 20), ConcreteCabinClass.BUSINESS))[0]
+    cdg_sfo = prov.search(LegSearch.single("CDG", "SFO", date(2026, 11, 20), ConcreteCabinClass.ECONOMY))[0]
+    lhr_cdg = prov.search(LegSearch.single("LHR", "CDG", date(2026, 11, 15), ConcreteCabinClass.ECONOMY))[0]
 
     bags = BaggageConfig(include_carry_on=True, checked_bags=2)
 
@@ -179,7 +180,7 @@ def test_build_google_flights_url_encodes_slices_trip_type_cabin_and_baggage() -
     ]
 
     # 4. 3-slice Multi-City (including a 1-stop leg to verify max_stops and user's custom StopsPolicy.max_layover_hours)
-    sfo_ath_1stop = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)[0]
+    sfo_ath_1stop = prov.search(LegSearch.single("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS))[0]
     assert sfo_ath_1stop.stops_count == 1
     custom_stops_policy = StopsPolicy(max_layover_hours=4.0)
     mc_url = build_google_flights_url(
@@ -331,12 +332,12 @@ def test_resolve_leg_max_stops_and_filtering() -> None:
     assert resolve_leg_max_stops("ATH", "JTR", StopsMode.ANY, policy) is None
 
     prov = RealisticPricingProvider()
-    ath_jtr = prov.search_leg("ATH", "JTR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)
+    ath_jtr = prov.search(LegSearch.single("ATH", "JTR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY))
     assert ath_jtr
     assert all(o.stops_count == 0 for o in filter_options_by_stops(ath_jtr, 0))
 
     # When no nonstop exists (e.g. SFO -> ATH), filter_options_by_stops(0) falls back to 1-stop
-    sfo_ath = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)
+    sfo_ath = prov.search(LegSearch.single("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS))
     filtered_sfo_ath = filter_options_by_stops(sfo_ath, 0)
     assert filtered_sfo_ath
     assert all(o.stops_count == 1 for o in filtered_sfo_ath)

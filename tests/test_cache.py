@@ -10,23 +10,36 @@ from pathlib import Path
 import pytest
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption, ProviderMode, TicketType
-from backend.app.providers.base import CachedFlightProvider
+from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.providers.pricing_engine import RealisticPricingProvider
 
 
 class MockLiveProvider(RealisticPricingProvider):
+    def __init__(self) -> None:
+        self.queries: list[LegSearch] = []
+
     def is_simulation(self) -> bool:
         return False
 
-    def search_leg(
-        self, origin: str, destination: str, departure_date: date, cabin: ConcreteCabinClass
-    ) -> list[FlightLegOption]:
-        return [
-            option.model_copy(update={"provider": "fast_flights"})
-            for option in super().search_leg(origin, destination, departure_date, cabin)
-        ]
+    def search(self, query: LegSearch) -> list[FlightLegOption]:
+        self.queries.append(query)
+        return [option.model_copy(update={"provider": "fast_flights"}) for option in super().search(query)]
+
+
+def test_leg_search_normalizes_codes_without_changing_airport_priority() -> None:
+    departure = date(2026, 11, 10)
+    query = LegSearch((" sfo ", "SFO", "oak"), (" lhr", "LGW", "lhr "), departure, ConcreteCabinClass.BUSINESS)
+    assert query.origins == ("SFO", "OAK")
+    assert query.destinations == ("LHR", "LGW")
+    assert query == LegSearch(("SFO", "OAK"), ("LHR", "LGW"), departure, ConcreteCabinClass.BUSINESS)
+    assert FlightCache.make_leg_key(query) != FlightCache.make_leg_key(
+        LegSearch(("OAK", "SFO"), ("LHR", "LGW"), departure, ConcreteCabinClass.BUSINESS)
+    )
+    with pytest.raises(ValueError, match="origin and destination"):
+        LegSearch(("",), ("LHR",), departure, ConcreteCabinClass.BUSINESS)
 
 
 def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
@@ -36,16 +49,19 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     cached_provider = CachedFlightProvider(delegate=raw_provider, cache=cache)
 
     dep_date = date(2026, 11, 10)
+    query = LegSearch.single("SFO", "LHR", dep_date, ConcreteCabinClass.BUSINESS)
     # 1st lookup should miss cache and populate both leg_search_cache and granular_flights
-    first_results = cached_provider.search_leg("SFO", "LHR", dep_date, ConcreteCabinClass.BUSINESS)
+    first_results = cached_provider.search(query)
     assert len(first_results) > 0
     stats_after_first = cache.get_stats()
     assert stats_after_first.cache_misses == 1
     assert stats_after_first.cache_hits == 0
     assert stats_after_first.total_cached_flights_in_db == len(first_results)
 
-    # 2nd identical lookup should hit SQLite cache and mark from_cache=True
-    second_results = cached_provider.search_leg("SFO", "LHR", dep_date, ConcreteCabinClass.BUSINESS)
+    # The same run reuses its result; a new run reads the persistent cache.
+    assert cached_provider.search(LegSearch.single(" sfo ", "lhr", dep_date, ConcreteCabinClass.BUSINESS))
+    assert raw_provider.queries == [query]
+    second_results = CachedFlightProvider(raw_provider, cache).search(query)
     assert len(second_results) == len(first_results)
     assert all(opt.from_cache for opt in second_results)
     stats_after_second = cache.get_stats()
@@ -59,25 +75,25 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert cache.get_stats().cache_hits == 2
 
     # A cached SFO-LHR search does not cover the other airport pairs in a batch.
-    batch_results = cached_provider.search_leg_batch(
-        ("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS
-    )
+    batch_query = LegSearch(("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS)
+    batch_results = cached_provider.search(batch_query)
     assert any(opt.origin == "OAK" for opt in batch_results)
     assert any(opt.destination == "LGW" for opt in batch_results)
     assert all(not opt.from_cache for opt in batch_results)
     assert cache.get_stats().cache_misses == 3  # search, quote, batch
-    batch_again = cached_provider.search_leg_batch(
-        ("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS
-    )
+    batch_again = CachedFlightProvider(raw_provider, cache).search(batch_query)
     assert len(batch_again) == len(batch_results)
     assert all(opt.from_cache for opt in batch_again)
     assert cache.get_stats().cache_hits == 3
 
-    # Force-refresh on search_leg_batch increments session_misses
+    # Force refresh bypasses SQLite once per query, not once per strategy.
     refresh_provider = CachedFlightProvider(delegate=raw_provider, cache=cache, force_refresh=True)
     misses_before = cache.get_stats().cache_misses
-    refresh_provider.search_leg_batch(("SFO",), ("LHR",), dep_date, ConcreteCabinClass.BUSINESS)
+    calls_before = len(raw_provider.queries)
+    refresh_provider.search(query)
+    refresh_provider.search(query)
     assert cache.get_stats().cache_misses == misses_before + 1
+    assert len(raw_provider.queries) == calls_before + 1
 
     # Provider usage logging persists across clear_all()
     cache.record_provider_call("serpapi")
@@ -96,14 +112,38 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
 def test_expired_search_is_not_recreated_from_granular_flights(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "expired.db", ttl_seconds=60)
     departure = date(2026, 11, 10)
-    options = MockLiveProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    cache.store_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS, options)
+    query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    options = MockLiveProvider().search(query)
+    cache.store_leg_options(query, options)
     with cache._connect() as conn:
         conn.execute("UPDATE leg_search_cache SET updated_at = ?", (time.time() - 61,))
 
-    assert cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS) is None
+    assert cache.get_leg_options(query) is None
     assert cache.get_stats().cache_misses == 1
     assert cache.get_stats().total_cached_flights_in_db == len(options)
+
+
+@pytest.mark.parametrize("force_refresh", [False, True])
+def test_empty_search_is_reused_only_within_the_run(tmp_path: Path, force_refresh: bool) -> None:
+    class EmptyProvider(FlightSearchProvider):
+        def __init__(self) -> None:
+            self.queries: list[LegSearch] = []
+
+        def search(self, query: LegSearch) -> list[FlightLegOption]:
+            self.queries.append(query)
+            return []
+
+    cache = FlightCache(tmp_path / "empty.db")
+    delegate = EmptyProvider()
+    query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    run = CachedFlightProvider(delegate, cache, force_refresh=force_refresh)
+    assert run.search(query) == []
+    assert run.search(query) == []
+    assert delegate.queries == [query]
+    assert cache.get_stats().cache_misses == 1
+    assert CachedFlightProvider(delegate, cache, force_refresh=force_refresh).search(query) == []
+    assert delegate.queries == [query, query]
+    assert cache.get_stats().total_cached_flights_in_db == 0
 
 
 @pytest.mark.parametrize("mode", [ProviderMode.AUTO, ProviderMode.FAST_FLIGHTS, ProviderMode.SERPAPI])
@@ -121,17 +161,54 @@ def test_live_search_never_falls_back_to_simulation(
 
     monkeypatch.setattr(provider, "_search_fast_flights", unavailable)
     monkeypatch.setattr(provider, "_search_serpapi_google_flights", unavailable)
-    assert provider.search_leg("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS) == []
-    assert provider.search_leg_batch(("SFO",), ("LHR",), date(2026, 11, 10), ConcreteCabinClass.BUSINESS) == []
+    query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    assert provider.search(query) == []
+    assert provider.search(LegSearch(("SFO", "OAK"), ("LHR",), query.departure_date, query.cabin)) == []
+
+
+def test_composite_does_not_repeat_failed_primary_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS)
+    attempts: list[tuple[str, str]] = []
+
+    def empty(origin: str, destination: str, *_args: object) -> list[FlightLegOption]:
+        attempts.append((origin, destination))
+        return []
+
+    monkeypatch.setattr(provider, "_search_fast_flights", empty)
+    query = LegSearch(("SFO", "OAK", "SJC"), ("LHR", "LGW"), date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+    assert provider.search(query) == []
+    assert attempts == [
+        ("SFO", "LHR"),
+        ("SFO", "LGW"),
+        ("OAK", "LHR"),
+        ("OAK", "LGW"),
+        ("SJC", "LHR"),
+        ("SJC", "LGW"),
+    ]
+
+
+def test_serpapi_single_airport_search_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = CompositeFlightProvider(mode=ProviderMode.SERPAPI)
+    provider.serpapi_key = "test-key"
+    attempts: list[tuple[str, str]] = []
+
+    def empty(origin: str, destination: str, *_args: object) -> list[FlightLegOption]:
+        attempts.append((origin, destination))
+        return []
+
+    monkeypatch.setattr(provider, "_search_serpapi_google_flights", empty)
+    assert provider.search(LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)) == []
+    assert attempts == [("SFO", "LHR")]
 
 
 def test_simulation_requires_explicit_testing_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FARESPLIT_TESTING", raising=False)
     provider = CompositeFlightProvider(mode=ProviderMode.OFFLINE)
+    query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
     with pytest.raises(ValueError, match="FARESPLIT_TESTING=1"):
-        provider.search_leg("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+        provider.search(query)
     monkeypatch.setenv("FARESPLIT_TESTING", "1")
-    results = provider.search_leg("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    results = provider.search(query)
     assert results
     assert all(option.provider == "pricing_engine" for option in results)
 
@@ -140,13 +217,14 @@ def test_simulation_bypasses_real_cache_and_never_persists(tmp_path: Path, monke
     monkeypatch.setenv("FARESPLIT_TESTING", "1")
     cache = FlightCache(tmp_path / "simulation.db")
     departure = date(2026, 11, 10)
-    live = MockLiveProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    cache.store_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS, live)
+    query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    live = MockLiveProvider().search(query)
+    cache.store_leg_options(query, live)
     before = cache.get_stats()
     for delegate in (RealisticPricingProvider(), CompositeFlightProvider(mode=ProviderMode.OFFLINE)):
         provider = CachedFlightProvider(delegate, cache)
-        single = provider.search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-        batch = provider.search_leg_batch(("SFO",), ("LHR",), departure, ConcreteCabinClass.BUSINESS)
+        single = provider.search(query)
+        batch = provider.search(LegSearch(("SFO",), ("LHR",), departure, ConcreteCabinClass.BUSINESS))
         assert single
         assert batch
         assert all(option.provider == "pricing_engine" and not option.from_cache for option in single + batch)
@@ -160,21 +238,23 @@ def test_simulation_bypasses_real_cache_and_never_persists(tmp_path: Path, monke
 def test_cache_rejects_simulated_and_mixed_writes(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "rejected.db")
     departure = date(2026, 11, 10)
-    fake = RealisticPricingProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    live = MockLiveProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    fake = RealisticPricingProvider().search(query)
+    live = MockLiveProvider().search(query)
     for options in (fake, fake + live):
-        cache.store_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS, options)
+        cache.store_leg_options(query, options)
     cache.store_ticket_quote("simulated", "open_jaw", {"providers": ["pricing_engine"], "base_fare_usd": 100})
     assert cache.get_stats().total_cached_flights_in_db == 0
     assert cache.get_stats().total_cached_quotes_in_db == 0
-    assert cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS) is None
+    assert cache.get_leg_options(query) is None
 
 
 def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "legacy.db")
     departure = date(2026, 11, 10)
-    live = MockLiveProvider().search_leg("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
-    cache.store_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS, live)
+    query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    live = MockLiveProvider().search(query)
+    cache.store_leg_options(query, live)
     cache.record_provider_call("serpapi")
     cache.store_ticket_quote("live-quote", "open_jaw", {"providers": ["fast_flights"], "base_fare_usd": 200})
     with cache._connect() as conn:
@@ -191,7 +271,7 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
             ("legacy-quote", "open_jaw", json.dumps({"base_fare_usd": 100}), time.time()),
         )
     cache = FlightCache(cache.db_path)
-    results = cache.get_leg_options("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
+    results = cache.get_leg_options(query)
     assert results is None
     with cache._connect() as conn:
         rows = conn.execute("SELECT payload_json FROM granular_flights").fetchall()

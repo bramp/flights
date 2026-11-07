@@ -4,22 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date
 from typing import Any
 
 from backend.app.cache.sqlite_cache import FlightCache
-from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption, TicketType
+from backend.app.models.queries import LegSearch
+from backend.app.models.schemas import FlightLegOption, TicketType
 
 ProgressCallback = Callable[[dict[str, Any]], None]
-
-
-@dataclass(frozen=True)
-class SliceQuery:
-    origin: str
-    destination: str
-    departure_date: date
-    cabin: ConcreteCabinClass
 
 
 class FlightSearchProvider(ABC):
@@ -29,32 +20,8 @@ class FlightSearchProvider(ABC):
         return False
 
     @abstractmethod
-    def search_leg(
-        self,
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
-        """Return candidate flight leg options for (origin, destination, departure_date, cabin)."""
-
-    def search_leg_batch(
-        self,
-        origins: tuple[str, ...],
-        destinations: tuple[str, ...],
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
-        """Search across multiple allowed origin and destination airports for a leg.
-        Providers like SerpApi can override this to batch comma-separated airports into 1 query.
-        """
-        results: list[FlightLegOption] = []
-        for orig in origins:
-            for dest in destinations:
-                if orig.upper() == dest.upper():
-                    continue
-                results.extend(self.search_leg(orig, dest, departure_date, cabin))
-        return results
+    def search(self, query: LegSearch) -> list[FlightLegOption]:
+        """Return candidate flight options for the allowed airports, date, and cabin."""
 
     def quote_multi_slice_ticket(
         self,
@@ -107,6 +74,7 @@ class CachedFlightProvider(FlightSearchProvider):
         self.progress_callback = progress_callback
         self.planned_query_keys: set[str] = set(planned_query_keys) if planned_query_keys else set()
         self.completed_query_keys: set[str] = set()
+        self._run_results: dict[LegSearch, list[FlightLegOption]] = {}
         self.schedule_index: int = 1
         self.schedules_total: int = 1
         self.current_schedule_route: str = ""
@@ -115,16 +83,11 @@ class CachedFlightProvider(FlightSearchProvider):
         self.strategies_total: int = 1
 
     @staticmethod
-    def format_query_label(
-        orig_key: str,
-        dest_key: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> str:
-        orig_display = orig_key.replace(",", ", ")
-        dest_display = dest_key.replace(",", ", ")
-        cabin_display = cabin.value.replace("_", " ").title()
-        return f"{orig_display} → {dest_display} ({departure_date.isoformat()} · {cabin_display})"
+    def format_query_label(query: LegSearch) -> str:
+        orig_display = ", ".join(query.origins)
+        dest_display = ", ".join(query.destinations)
+        cabin_display = query.cabin.value.replace("_", " ").title()
+        return f"{orig_display} → {dest_display} ({query.departure_date.isoformat()} · {cabin_display})"
 
     def compute_progress_pct(self) -> int:
         total_q = max(1, len(self.planned_query_keys))
@@ -166,118 +129,49 @@ class CachedFlightProvider(FlightSearchProvider):
             payload["last_query"] = last_query
         self.progress_callback(payload)
 
-    def search_leg(
-        self,
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
-        clean_orig = origin.strip().upper()
-        clean_dest = destination.strip().upper()
-        leg_key = self.cache.make_leg_key(clean_orig, clean_dest, departure_date, cabin)
-        is_new_query = leg_key not in self.completed_query_keys
-        query_label = self.format_query_label(clean_orig, clean_dest, departure_date, cabin)
-        if is_new_query:
-            self.planned_query_keys.add(leg_key)
-            self.emit_progress(phase="query_start", current_query=query_label)
+    def search(self, query: LegSearch) -> list[FlightLegOption]:
+        if query in self._run_results:
+            return list(self._run_results[query])
+
+        leg_key = self.cache.make_leg_key(query)
+        query_label = self.format_query_label(query)
+        self.planned_query_keys.add(leg_key)
+        self.emit_progress(phase="query_start", current_query=query_label)
 
         hits_before = self.cache.session_hits
         if self.delegate.is_simulation():
-            results = self.delegate.search_leg(origin, destination, departure_date, cabin)
+            results = self.delegate.search(query)
         else:
-            cached = (
-                None if self.force_refresh else self.cache.get_leg_options(origin, destination, departure_date, cabin)
-            )
+            cached = None if self.force_refresh else self.cache.get_leg_options(query)
             if cached is not None:
                 results = cached
             else:
                 if self.force_refresh:
                     self.cache.session_misses += 1
-                results = self.delegate.search_leg(origin, destination, departure_date, cabin)
+                results = self.delegate.search(query)
                 if results:
-                    self.cache.store_leg_options(origin, destination, departure_date, cabin, results)
+                    self.cache.store_leg_options(query, results)
 
-        if is_new_query:
-            self.completed_query_keys.add(leg_key)
-            source = (
-                "simulated"
-                if self.delegate.is_simulation()
-                else ("cache" if self.cache.session_hits > hits_before else "live")
-            )
-            self.emit_progress(
-                phase="query_done",
-                current_query=query_label,
-                last_query={
-                    "query": query_label,
-                    "route": f"{clean_orig} → {clean_dest}",
-                    "date": departure_date.isoformat(),
-                    "cabin": cabin.value.replace("_", " ").title(),
-                    "options_count": len(results),
-                    "source": source,
-                },
-            )
-        return results
-
-    def search_leg_batch(
-        self,
-        origins: tuple[str, ...],
-        destinations: tuple[str, ...],
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
-        clean_origs = tuple(dict.fromkeys(o.strip().upper() for o in origins if o.strip()))
-        clean_dests = tuple(dict.fromkeys(d.strip().upper() for d in destinations if d.strip()))
-        if not clean_origs or not clean_dests:
-            return []
-
-        batch_orig_key = ",".join(clean_origs)
-        batch_dest_key = ",".join(clean_dests)
-        leg_key = self.cache.make_leg_key(batch_orig_key, batch_dest_key, departure_date, cabin)
-        is_new_query = leg_key not in self.completed_query_keys
-        query_label = self.format_query_label(batch_orig_key, batch_dest_key, departure_date, cabin)
-        if is_new_query:
-            self.planned_query_keys.add(leg_key)
-            self.emit_progress(phase="query_start", current_query=query_label)
-
-        hits_before = self.cache.session_hits
-        if self.delegate.is_simulation():
-            results = self.delegate.search_leg_batch(clean_origs, clean_dests, departure_date, cabin)
-        else:
-            cached = (
-                None
-                if self.force_refresh
-                else self.cache.get_leg_options(batch_orig_key, batch_dest_key, departure_date, cabin)
-            )
-            if cached is not None:
-                results = cached
-            else:
-                if self.force_refresh:
-                    self.cache.session_misses += 1
-                results = self.delegate.search_leg_batch(clean_origs, clean_dests, departure_date, cabin)
-                if results:
-                    self.cache.store_leg_options(batch_orig_key, batch_dest_key, departure_date, cabin, results)
-
-        if is_new_query:
-            self.completed_query_keys.add(leg_key)
-            source = (
-                "simulated"
-                if self.delegate.is_simulation()
-                else ("cache" if self.cache.session_hits > hits_before else "live")
-            )
-            self.emit_progress(
-                phase="query_done",
-                current_query=query_label,
-                last_query={
-                    "query": query_label,
-                    "route": f"{batch_orig_key.replace(',', ', ')} → {batch_dest_key.replace(',', ', ')}",
-                    "date": departure_date.isoformat(),
-                    "cabin": cabin.value.replace("_", " ").title(),
-                    "options_count": len(results),
-                    "source": source,
-                },
-            )
-        return results
+        self._run_results[query] = list(results)
+        self.completed_query_keys.add(leg_key)
+        source = (
+            "simulated"
+            if self.delegate.is_simulation()
+            else ("cache" if self.cache.session_hits > hits_before else "live")
+        )
+        self.emit_progress(
+            phase="query_done",
+            current_query=query_label,
+            last_query={
+                "query": query_label,
+                "route": f"{', '.join(query.origins)} → {', '.join(query.destinations)}",
+                "date": query.departure_date.isoformat(),
+                "cabin": query.cabin.value.replace("_", " ").title(),
+                "options_count": len(results),
+                "source": source,
+            },
+        )
+        return list(results)
 
     def quote_multi_slice_ticket(
         self,

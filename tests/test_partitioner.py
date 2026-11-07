@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     BaggageConfig,
     CabinClass,
@@ -234,13 +235,11 @@ def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_
     tmp_path: Path,
 ) -> None:
     class UnalignedCarrierProvider(FlightSearchProvider):
-        def search_leg(
-            self,
-            origin: str,
-            destination: str,
-            departure_date: date,
-            cabin: ConcreteCabinClass,
-        ) -> list[FlightLegOption]:
+        def search(self, query: LegSearch) -> list[FlightLegOption]:
+            origin = query.origins[0]
+            destination = query.destinations[0]
+            departure_date = query.departure_date
+            cabin = query.cabin
             airline = "EK" if (origin == "SFO" or destination == "SFO") else "GQ"
             airline_name = "Emirates" if airline == "EK" else "SKY express"
             return [
@@ -277,9 +276,9 @@ def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_
             ]
 
     prov = UnalignedCarrierProvider()
-    leg_ek_out = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)[0]
-    leg_ek_ret = prov.search_leg("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS)[0]
-    leg_gq_mid = prov.search_leg("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)[0]
+    leg_ek_out = prov.search(LegSearch.single("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS))[0]
+    leg_ek_ret = prov.search(LegSearch.single("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS))[0]
+    leg_gq_mid = prov.search(LegSearch.single("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY))[0]
 
     # Same unaligned carrier (EK + EK) gets combined Open-Jaw RT half-fare ($650 + $650 = $1300)
     assert prov.quote_multi_slice_ticket([leg_ek_out, leg_ek_ret], TicketType.OPEN_JAW) == 1300.0

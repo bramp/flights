@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from datetime import date
 from pathlib import Path
 
 from backend.app.data.airports import record_observed_duration
+from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     CacheStats,
-    ConcreteCabinClass,
     FlightLegOption,
 )
 
@@ -146,22 +145,13 @@ class FlightCache:
             )
 
     @staticmethod
-    def make_leg_key(
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> str:
-        return f"{origin.upper()}:{destination.upper()}:{departure_date.isoformat()}:{cabin.value}"
+    def make_leg_key(query: LegSearch) -> str:
+        origins = ",".join(query.origins)
+        destinations = ",".join(query.destinations)
+        return f"{origins}:{destinations}:{query.departure_date.isoformat()}:{query.cabin.value}"
 
-    def get_leg_options(
-        self,
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption] | None:
-        key = self.make_leg_key(origin, destination, departure_date, cabin)
+    def get_leg_options(self, query: LegSearch) -> list[FlightLegOption] | None:
+        key = self.make_leg_key(query)
         now = time.time()
         with self._connect() as conn:
             row = conn.execute(
@@ -181,17 +171,10 @@ class FlightCache:
         self.session_misses += 1
         return None
 
-    def store_leg_options(
-        self,
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-        options: list[FlightLegOption],
-    ) -> None:
+    def store_leg_options(self, query: LegSearch, options: list[FlightLegOption]) -> None:
         if not options or any(option.provider == "pricing_engine" for option in options):
             return
-        key = self.make_leg_key(origin, destination, departure_date, cabin)
+        key = self.make_leg_key(query)
         now = time.time()
         serialized_list = json.dumps([opt.model_dump(mode="json") for opt in options])
         with self._connect() as conn:
@@ -203,10 +186,10 @@ class FlightCache:
                 """,
                 (
                     key,
-                    origin.upper(),
-                    destination.upper(),
-                    departure_date.isoformat(),
-                    cabin.value,
+                    ",".join(query.origins),
+                    ",".join(query.destinations),
+                    query.departure_date.isoformat(),
+                    query.cabin.value,
                     serialized_list,
                     now,
                 ),
