@@ -116,8 +116,12 @@ def evaluate_hub_split_candidates(
             opts_0a = [o for o in raw_0a if o.stops_count == 0]
             opts_0b = [o for o in raw_0b if o.stops_count == 0]
         else:
-            opts_0a = filter_options_by_stops(raw_0a, sub_max_stops)
-            opts_0b = filter_options_by_stops(raw_0b, sub_max_stops)
+            opts_0a = filter_options_by_stops(
+                raw_0a, sub_max_stops, max_layover_hours=request.stops_policy.max_layover_hours
+            )
+            opts_0b = filter_options_by_stops(
+                raw_0b, sub_max_stops, max_layover_hours=request.stops_policy.max_layover_hours
+            )
         if not opts_0a or not opts_0b:
             continue
 

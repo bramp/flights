@@ -58,7 +58,11 @@ def _fetch_all_airport_pair_options(
     max_stops = resolve_leg_max_stops(
         origs[0], dests[0], leg_spec.requested_stops, request.stops_policy, options=raw_options
     )
-    return filter_options_by_stops(raw_options, max_stops)
+    return filter_options_by_stops(
+        raw_options,
+        max_stops,
+        max_layover_hours=request.stops_policy.max_layover_hours,
+    )
 
 
 def _slug(label: str) -> str:
@@ -153,7 +157,14 @@ def _assemble_itinerary(
         t
         if t.google_flights_url
         else t.model_copy(
-            update={"google_flights_url": build_google_flights_url(t.legs, t.ticket_type, request.baggage)}
+            update={
+                "google_flights_url": build_google_flights_url(
+                    t.legs,
+                    t.ticket_type,
+                    request.baggage,
+                    stops_policy=request.stops_policy,
+                )
+            }
         )
         for t in tickets
     ]

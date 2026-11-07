@@ -15,6 +15,7 @@ const DEFAULT_STOPS_POLICY = {
   short_haul_stops: "nonstop",
   long_haul_stops: "one_stop",
   nonstop_threshold_hours: 4.5,
+  max_layover_hours: 6.0,
 };
 
 const PRESETS = {
@@ -336,6 +337,8 @@ function setResultsStale(isStale) {
 function clampDatesToTripWindow() {
   if (!state.stops_policy) {
     state.stops_policy = { ...DEFAULT_STOPS_POLICY };
+  } else if (typeof state.stops_policy.max_layover_hours !== "number") {
+    state.stops_policy.max_layover_hours = DEFAULT_STOPS_POLICY.max_layover_hours;
   }
   if (!state.return_leg_stops) {
     state.return_leg_stops = "auto";
@@ -1336,6 +1339,8 @@ function renderBuilder() {
   if (shortStopsEl) shortStopsEl.value = state.stops_policy.short_haul_stops;
   const longStopsEl = document.getElementById("longHaulStopsSelect");
   if (longStopsEl) longStopsEl.value = state.stops_policy.long_haul_stops;
+  const maxLayoverEl = document.getElementById("maxLayoverHoursInput");
+  if (maxLayoverEl) maxLayoverEl.value = state.stops_policy.max_layover_hours ?? 6.0;
   const nonstopThreshEl = document.getElementById("nonstopThresholdInput");
   if (nonstopThreshEl) nonstopThreshEl.value = state.stops_policy.nonstop_threshold_hours;
 
@@ -2091,7 +2096,7 @@ function renderOptimizationResults(data) {
             </div>
             <div>
               ${escapeHtml(l.airline_name)} (${escapeHtml(l.flight_numbers.join(", "))}) · ${l.duration_hours}h ·
-              ${l.stops_count === 0 ? "Nonstop" : `${l.stops_count} stop (${escapeHtml(l.layover_airports.join(","))})`}
+              ${l.stops_count === 0 ? "Nonstop" : `${l.stops_count} stop (${escapeHtml(l.layover_airports.join(","))}${l.layover_hours ? ` · ${Number(l.layover_hours).toFixed(1)}h layover` : ""})`}
               ${l.from_cache ? ' <span title="Loaded from SQLite cache">⚡</span>' : ""}
             </div>
           </div>
@@ -2337,6 +2342,17 @@ async function initApp() {
       const val = parseFloat(e.target.value);
       if (!isNaN(val) && val >= 0.5) {
         state.stops_policy.nonstop_threshold_hours = val;
+        onStateMutated();
+      }
+    });
+  }
+
+  const maxLayoverHoursEl = document.getElementById("maxLayoverHoursInput");
+  if (maxLayoverHoursEl) {
+    maxLayoverHoursEl.addEventListener("change", (e) => {
+      const val = parseFloat(e.target.value);
+      if (!isNaN(val) && val >= 1.0) {
+        state.stops_policy.max_layover_hours = Math.min(24.0, val);
         onStateMutated();
       }
     });

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import itertools
+import math
 import os
 import time
-from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fast_flights import FlightQuery, Passengers, create_query, get_flights
+from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query, get_flights
 from fast_flights.types import SeatType, TripType
 
 from backend.app.cache.sqlite_cache import FlightCache
@@ -24,6 +25,7 @@ from backend.app.models.schemas import (
     FlightLegOption,
     FlightSegment,
     ProviderMode,
+    StopsPolicy,
     TicketType,
 )
 from backend.app.providers.base import FlightSearchProvider
@@ -45,25 +47,55 @@ _CABIN_ORDER: dict[ConcreteCabinClass, int] = {
 }
 
 
+def _extract_simple_datetime(dt_obj: Any) -> datetime | None:
+    """Extract a naive local datetime from a fast_flights `SimpleDatetime(date=(Y, M, D), time=(H, M))`."""
+    if dt_obj is None:
+        return None
+    d_tuple = getattr(dt_obj, "date", None)
+    t_tuple = getattr(dt_obj, "time", None)
+    if isinstance(d_tuple, (tuple, list)) and len(d_tuple) == 3 and all(isinstance(x, int) for x in d_tuple):
+        hh = 0
+        mm = 0
+        if isinstance(t_tuple, (tuple, list)) and len(t_tuple) >= 2:
+            hh = int(t_tuple[0] or 0)
+            mm = int(t_tuple[1] or 0)
+        try:
+            return datetime(int(d_tuple[0]), int(d_tuple[1]), int(d_tuple[2]), hh, mm, tzinfo=UTC)
+        except ValueError:
+            return None
+    return None
+
+
 def build_google_flights_url(
     legs: list[FlightLegOption],
     ticket_type: TicketType,
     baggage: BaggageConfig | None = None,
+    stops_policy: StopsPolicy | None = None,
 ) -> str:
     """Build a direct Google Flights search URL (`?tfs=...`) pre-populated with all slices,
-    dates, cabin class, and baggage for a bookable ticket.
+    dates, cabin class, stop limits, max layover duration, and baggage for a bookable ticket.
     """
     if not legs:
         return "https://www.google.com/travel/flights"
 
-    flight_queries = [
-        FlightQuery(
-            date=leg.departure_date.isoformat(),
-            from_airport=leg.origin.upper(),
-            to_airport=leg.destination.upper(),
+    policy = stops_policy or StopsPolicy()
+    policy_layover_mins = round(policy.max_layover_hours * 60.0)
+    flight_queries: list[FlightQuery] = []
+    for leg in legs:
+        max_layover_mins: int | None = None
+        if leg.stops_count > 0:
+            per_stop_hrs = leg.layover_hours / leg.stops_count
+            leg_layover_mins = math.ceil(per_stop_hrs * 60.0 / 30.0) * 30
+            max_layover_mins = max(policy_layover_mins, leg_layover_mins)
+        flight_queries.append(
+            FlightQuery(
+                date=leg.departure_date.isoformat(),
+                from_airport=leg.origin.upper(),
+                to_airport=leg.destination.upper(),
+                max_stops=leg.stops_count,
+                max_layover_minutes=max_layover_mins,
+            )
         )
-        for leg in legs
-    ]
 
     is_exact_round_trip = (
         ticket_type == TicketType.ROUND_TRIP
@@ -239,6 +271,7 @@ class CompositeFlightProvider(FlightSearchProvider):
         self.cache = cache
         self.mode = mode
         self.max_api_calls = max_api_calls
+        self.max_layover_hours = StopsPolicy().max_layover_hours
         env_delay = os.environ.get("FLIGHT_SEARCH_DELAY_SECONDS", "").strip()
         self.rate_limit_seconds = (
             rate_limit_seconds if rate_limit_seconds is not None else (float(env_delay) if env_delay else None)
@@ -257,12 +290,14 @@ class CompositeFlightProvider(FlightSearchProvider):
         cache: FlightCache,
         mode: ProviderMode,
         max_api_calls: int,
+        stops_policy: StopsPolicy | None = None,
     ) -> None:
         load_dotenv()
         self.serpapi_key = os.environ.get("SERPAPI_KEY", "").strip()
         self.cache = cache
         self.mode = mode
         self.max_api_calls = max_api_calls
+        self.max_layover_hours = (stops_policy or StopsPolicy()).max_layover_hours
         self.api_calls_this_run = 0
         self.cap_reached_warned = False
         self.warnings = []
@@ -380,34 +415,49 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
-        seat_map: dict[ConcreteCabinClass, Any] = {
-            ConcreteCabinClass.ECONOMY: "economy",
-            ConcreteCabinClass.PREMIUM_ECONOMY: "premium-economy",
-            ConcreteCabinClass.BUSINESS: "business",
-            ConcreteCabinClass.FIRST: "first",
-        }
         self._throttle(default_delay=1.0)
         self.api_calls_this_run += 1
         if self.cache is not None:
             self.cache.record_provider_call("fast_flights")
             self.cache.active_provider = "fast_flights"
 
-        query = create_query(
-            flights=[
-                FlightQuery(
-                    date=departure_date.isoformat(),
-                    from_airport=origin.upper(),
-                    to_airport=destination.upper(),
-                )
-            ],
-            seat=seat_map[cabin],
-            trip="one-way",
-            passengers=Passengers(adults=1),
-            currency="USD",
-            language="en",
-            hide_separate_and_self_transfer=True,
-        )
-        result_list = get_flights(query)
+        def _build_query(layover_limit: int | None) -> Any:
+            return create_query(
+                flights=[
+                    FlightQuery(
+                        date=departure_date.isoformat(),
+                        from_airport=origin.upper(),
+                        to_airport=destination.upper(),
+                        max_layover_minutes=layover_limit,
+                    )
+                ],
+                seat=_SEAT_TYPE_MAP[cabin],
+                trip="one-way",
+                passengers=Passengers(adults=1),
+                currency="USD",
+                language="en",
+                hide_separate_and_self_transfer=True,
+            )
+
+        default_cap_hours = StopsPolicy().max_layover_hours
+        effective_hours = max(self.max_layover_hours, default_cap_hours)
+        layover_mins = round(effective_hours * 60.0) if effective_hours > 0 else None
+        try:
+            result_list: list[Any] = get_flights(_build_query(layover_mins))
+        except FlightsNotFound:
+            result_list = []
+
+        # If strict layover cap yielded no flights on this corridor, retry without the layover cap
+        if not result_list and layover_mins is not None and self._can_make_live_call():
+            self._throttle(default_delay=1.0)
+            self.api_calls_this_run += 1
+            if self.cache is not None:
+                self.cache.record_provider_call("fast_flights")
+            try:
+                result_list = get_flights(_build_query(None))
+            except FlightsNotFound:
+                result_list = []
+
         return self.parse_fast_flights_results(
             results=result_list,
             origin=origin.upper(),
@@ -417,30 +467,54 @@ class CompositeFlightProvider(FlightSearchProvider):
         )
 
     @staticmethod
-    def _select_diverse_by_stops[T](
-        items: list[T],
-        stops_fn: Callable[[T], int],
-        price_fn: Callable[[T], float],
-        max_total: int = 15,
-    ) -> list[T]:
-        """Preserve top options across each stops bucket (nonstop, 1-stop, 2+-stop) before capping,
-        so direct and 1-stop flights are never truncated by cheaper multi-stop itineraries.
+    def _compute_fast_flights_layovers(raw_flights: list[Any]) -> list[float]:
+        """Compute individual layover durations (hours) between consecutive fast_flights segments
+        using their local arrival and departure `(date, time)` tuples.
         """
-        buckets: dict[int, list[T]] = {0: [], 1: [], 2: []}
-        for item in items:
-            s = min(2, max(0, int(stops_fn(item))))
-            buckets[s].append(item)
-        for bucket in buckets.values():
-            bucket.sort(key=price_fn)
+        if len(raw_flights) <= 1:
+            return []
+        layovers: list[float] = []
+        for prev_sf, next_sf in itertools.pairwise(raw_flights):
+            arr_dt = _extract_simple_datetime(getattr(prev_sf, "arrival", None))
+            dep_dt = _extract_simple_datetime(getattr(next_sf, "departure", None))
+            if arr_dt is not None and dep_dt is not None:
+                diff_hrs = round((dep_dt - arr_dt).total_seconds() / 3600.0, 2)
+                if diff_hrs >= 0:
+                    layovers.append(diff_hrs)
+                    continue
+            layovers.append(1.75)
+        return layovers
 
-        selected: list[T] = []
+    @staticmethod
+    def _select_diverse_by_stops(
+        options: list[FlightLegOption],
+        max_total: int = 15,
+    ) -> list[FlightLegOption]:
+        """Preserve top options across each stops bucket (nonstop, 1-stop, 2+-stop) before capping,
+        prioritizing normal connections and ranking by generalized cost (base fare + layover time).
+        """
+        default_cap = StopsPolicy().max_layover_hours
+
+        def rank_key(opt: FlightLegOption) -> tuple[bool, float, float]:
+            over_cap = opt.stops_count > 0 and (opt.layover_hours / opt.stops_count) > default_cap
+            return (over_cap, opt.one_way_base_fare_usd + opt.layover_hours * 35.0, opt.duration_hours)
+
+        buckets: dict[int, list[FlightLegOption]] = {0: [], 1: [], 2: []}
+        for opt in options:
+            buckets[min(2, max(0, opt.stops_count))].append(opt)
+
+        for bucket in buckets.values():
+            bucket.sort(key=rank_key)
+
+        selected: list[FlightLegOption] = []
         # Take up to 5 from each bucket first (prioritizing nonstop and 1-stop)
         for s in (0, 1, 2):
             selected.extend(buckets[s][:5])
         if len(selected) < max_total:
-            remaining = [it for it in items if it not in selected]
-            remaining.sort(key=price_fn)
-            selected.extend(remaining[: max_total - len(selected)])
+            pool = [o for s in (0, 1, 2) for o in buckets[s] if o not in selected]
+            pool.sort(key=rank_key)
+            selected.extend(pool[: max_total - len(selected)])
+        selected.sort(key=rank_key)
         return selected[:max_total]
 
     @staticmethod
@@ -464,18 +538,8 @@ class CompositeFlightProvider(FlightSearchProvider):
             if m_code and m_name:
                 register_discovered_airline(m_code, m_name)
 
-        valid_items: list[Any] = [
-            item for item in results if getattr(item, "price", None) and (getattr(item, "flights", None) or [])
-        ]
-        diverse_items = CompositeFlightProvider._select_diverse_by_stops(
-            valid_items,
-            stops_fn=lambda it: max(0, len(getattr(it, "flights", []) or []) - 1),
-            price_fn=lambda it: float(getattr(it, "price", 0) or 0),
-            max_total=15,
-        )
-
         options: list[FlightLegOption] = []
-        for idx, item in enumerate(diverse_items):
+        for idx, item in enumerate(results):
             price_val = getattr(item, "price", None)
             raw_flights: list[Any] = getattr(item, "flights", None) or []
             airlines_list: list[Any] = getattr(item, "airlines", None) or []
@@ -507,7 +571,10 @@ class CompositeFlightProvider(FlightSearchProvider):
                 arr_code = str(getattr(to_ap, "code", "") or destination)
                 register_discovered_airport(dep_code, str(getattr(from_ap, "name", "") or ""))
                 register_discovered_airport(arr_code, str(getattr(to_ap, "name", "") or ""))
-                dep_time_tuple = getattr(getattr(sf, "departure", None), "time", (9, 0))
+                dep_dt_obj = getattr(sf, "departure", None)
+                dep_parsed_dt = _extract_simple_datetime(dep_dt_obj)
+                seg_dep_date = dep_parsed_dt.date() if dep_parsed_dt is not None else departure_date
+                dep_time_tuple = getattr(dep_dt_obj, "time", (9, 0))
                 arr_time_tuple = getattr(getattr(sf, "arrival", None), "time", (17, 0))
                 dep_hm = f"{int(dep_time_tuple[0]):02d}:{int(dep_time_tuple[1]):02d}"
                 arr_hm = f"{int(arr_time_tuple[0]):02d}:{int(arr_time_tuple[1]):02d}"
@@ -521,7 +588,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                     FlightSegment(
                         origin=dep_code,
                         destination=arr_code,
-                        departure_date=departure_date,
+                        departure_date=seg_dep_date,
                         departure_time=dep_hm,
                         arrival_time=arr_hm,
                         airline=carrier_code,
@@ -540,7 +607,8 @@ class CompositeFlightProvider(FlightSearchProvider):
             layover_airports = [s.destination for s in segments[:-1]]
             flight_hrs = round(sum(s.duration_hours for s in segments), 2)
             record_observed_duration(actual_orig, actual_dest, flight_hrs)
-            layover_hours = round(stops_count * 1.75, 2)
+            layovers_list = CompositeFlightProvider._compute_fast_flights_layovers(raw_flights)
+            layover_hours = round(sum(layovers_list), 2)
             total_hours = round(flight_hrs + layover_hours, 2)
             rt_half = ow_price if is_lcc else round(ow_price * 0.76, 2)
 
@@ -571,8 +639,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                 )
             )
 
-        options.sort(key=lambda o: (o.one_way_base_fare_usd, o.duration_hours))
-        return options
+        return CompositeFlightProvider._select_diverse_by_stops(options)
 
     def _search_serpapi_google_flights(
         self,
@@ -638,18 +705,8 @@ class CompositeFlightProvider(FlightSearchProvider):
         fallback_orig = origin.split(",", maxsplit=1)[0].strip().upper()
         fallback_dest = destination.split(",", maxsplit=1)[0].strip().upper()
 
-        valid_raw: list[dict[str, Any]] = [
-            item for item in flights_raw if item.get("price") is not None and (item.get("flights") or [])
-        ]
-        diverse_raw = CompositeFlightProvider._select_diverse_by_stops(
-            valid_raw,
-            stops_fn=lambda it: max(0, len(it.get("flights") or []) - 1),
-            price_fn=lambda it: float(it.get("price") or 0),
-            max_total=15,
-        )
-
         parsed_options: list[FlightLegOption] = []
-        for idx, item in enumerate(diverse_raw):
+        for idx, item in enumerate(flights_raw):
             price_raw = item.get("price")
             if price_raw is None:
                 continue
@@ -680,6 +737,11 @@ class CompositeFlightProvider(FlightSearchProvider):
                 register_discovered_airport(arr_airport, str(arr_info.get("name") or ""))
                 dep_time_full = str(dep_info.get("time") or "09:00")
                 arr_time_full = str(arr_info.get("time") or "17:00")
+                dep_date_part = dep_time_full.split(" ", maxsplit=1)[0]
+                try:
+                    seg_dep_date = date.fromisoformat(dep_date_part)
+                except ValueError:
+                    seg_dep_date = departure_date
                 dep_hm = dep_time_full.rsplit(" ", maxsplit=1)[-1][:5]
                 arr_hm = arr_time_full.rsplit(" ", maxsplit=1)[-1][:5]
                 seg_dur_hrs = round(float(seg.get("duration") or 60.0) / 60.0, 2)
@@ -691,7 +753,7 @@ class CompositeFlightProvider(FlightSearchProvider):
                     FlightSegment(
                         origin=dep_airport,
                         destination=arr_airport,
-                        departure_date=departure_date,
+                        departure_date=seg_dep_date,
                         departure_time=dep_hm,
                         arrival_time=arr_hm,
                         airline=carrier_code,
@@ -755,5 +817,4 @@ class CompositeFlightProvider(FlightSearchProvider):
                 )
             )
 
-        parsed_options.sort(key=lambda o: (o.one_way_base_fare_usd, o.duration_hours))
-        return parsed_options
+        return CompositeFlightProvider._select_diverse_by_stops(parsed_options)

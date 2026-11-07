@@ -84,6 +84,12 @@ class StopsPolicy(BaseModel):
         le=24.0,
         description="Flights under this estimated nonstop duration use short_haul_stops when a leg is set to 'auto'.",
     )
+    max_layover_hours: float = Field(
+        default=6.0,
+        ge=1.0,
+        le=24.0,
+        description="Maximum allowed layover duration (hours) per connection before falling back.",
+    )
 
 
 class OptimizationWeights(BaseModel):

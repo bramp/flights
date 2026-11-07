@@ -89,6 +89,7 @@ def optimize_trip(
             cache=cache,
             mode=request.provider_mode,
             max_api_calls=request.max_api_calls_per_run,
+            stops_policy=request.stops_policy,
         )
 
     warnings: list[str] = []
@@ -201,6 +202,17 @@ def optimize_trip(
                 warnings.append(
                     f"No {limit_label} flight was available for {leg.origin}→{leg.destination} on "
                     f"{leg.departure_date.isoformat()}; relaxed to {leg.stops_count} stop(s)."
+                )
+            if (
+                leg.stops_count > 0
+                and request.stops_policy.max_layover_hours > 0
+                and (leg.layover_hours / leg.stops_count) > request.stops_policy.max_layover_hours
+            ):
+                per_stop_layover = leg.layover_hours / leg.stops_count
+                warnings.append(
+                    f"No flight under the {request.stops_policy.max_layover_hours:.1f}h layover cap was available for "
+                    f"{leg.origin}→{leg.destination} on {leg.departure_date.isoformat()} "
+                    f"(shortest layover: {per_stop_layover:.1f}h)."
                 )
 
     cached_provider.planned_query_keys = set(cached_provider.completed_query_keys)

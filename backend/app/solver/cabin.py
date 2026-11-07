@@ -95,15 +95,32 @@ def resolve_leg_max_stops(
 def filter_options_by_stops(
     options: list[FlightLegOption],
     max_stops: int | None,
+    max_layover_hours: float | None = None,
 ) -> list[FlightLegOption]:
-    """Filter candidate flight options to those matching `max_stops`, or gracefully fall back
-    to the minimum stops count available if no flight meets the strict bound (e.g. a route
-    where no nonstop flight operates on that date).
+    """Filter candidate flight options to those matching `max_stops` and `max_layover_hours` per stop,
+    gracefully falling back to the minimum stops / shortest layover available if no flight meets
+    the strict bound.
     """
-    if not options or max_stops is None:
+    if not options:
         return options
-    matching = [opt for opt in options if opt.stops_count <= max_stops]
-    if matching:
-        return matching
-    min_available = min(opt.stops_count for opt in options)
-    return [opt for opt in options if opt.stops_count == min_available]
+
+    candidates = options
+    if max_stops is not None:
+        matching = [opt for opt in candidates if opt.stops_count <= max_stops]
+        if matching:
+            candidates = matching
+        else:
+            min_available = min(opt.stops_count for opt in candidates)
+            candidates = [opt for opt in candidates if opt.stops_count == min_available]
+
+    if max_layover_hours is None or max_layover_hours <= 0:
+        return candidates
+
+    within_layover = [
+        opt for opt in candidates if opt.stops_count == 0 or (opt.layover_hours / opt.stops_count) <= max_layover_hours
+    ]
+    if within_layover:
+        return within_layover
+
+    min_layover = min(opt.layover_hours / max(1, opt.stops_count) for opt in candidates)
+    return [opt for opt in candidates if (opt.layover_hours / max(1, opt.stops_count)) <= min_layover + 0.5]

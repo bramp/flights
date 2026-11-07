@@ -148,6 +148,9 @@ test("Optimize submits edited inputs, shows loading and clears stale results", a
   await page.locator("#includeCarryOnCheck").uncheck();
   await page.locator("#shortHaulStopsSelect").selectOption("nonstop");
   await page.locator("#longHaulStopsSelect").selectOption("one_stop");
+  await page.locator("#toggleWeightsBtn").click();
+  await page.locator("#maxLayoverHoursInput").fill("4.5");
+  await page.locator("#maxLayoverHoursInput").press("Tab");
   await page.locator(".connector-stops-pills").nth(1).getByRole("button", { name: "Nonstop" }).click();
   await page.locator("#forceRefreshCheck").check();
   await expect(page.locator("#staleNoticeBadge")).toBeVisible();
@@ -206,6 +209,7 @@ test("Optimize submits edited inputs, shows loading and clears stale results", a
         short_haul_stops: "nonstop",
         long_haul_stops: "one_stop",
         nonstop_threshold_hours: 4.5,
+        max_layover_hours: 4.5,
       },
       stops: expect.arrayContaining([
         expect.objectContaining({ id: "stop-ath", airports: ["ATH"], outbound_stops: "auto" }),

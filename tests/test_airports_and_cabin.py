@@ -177,11 +177,132 @@ def test_build_google_flights_url_encodes_slices_trip_type_cabin_and_baggage() -
         ("CDG", "SFO"),
     ]
 
-    # 4. 3-slice Multi-City
-    mc_url = build_google_flights_url([sfo_lhr, lhr_cdg, cdg_sfo], TicketType.MULTI_CITY, bags)
+    # 4. 3-slice Multi-City (including a 1-stop leg to verify max_stops and user's custom StopsPolicy.max_layover_hours)
+    sfo_ath_1stop = prov.search_leg("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)[0]
+    assert sfo_ath_1stop.stops_count == 1
+    custom_stops_policy = StopsPolicy(max_layover_hours=4.0)
+    mc_url = build_google_flights_url(
+        [sfo_ath_1stop, lhr_cdg, cdg_sfo],
+        TicketType.MULTI_CITY,
+        bags,
+        stops_policy=custom_stops_policy,
+    )
     mc_info = _decode_google_flights_tfs(mc_url)
     assert mc_info.trip == Trip.MULTI_CITY
     assert len(mc_info.data) == 3
+    assert mc_info.data[0].max_stops == 1
+    assert mc_info.data[0].max_layover_minutes == 240
+    assert mc_info.data[1].max_stops == 0
+
+
+def test_fast_flights_computes_exact_layovers_and_filters_long_layovers() -> None:
+    """Verify that a 28h 45m layover (e.g. SFO -> LIS -> ATH arriving Dec 12 14:20, departing Dec 13 19:05)
+    has its true 28.75h layover computed rather than a hardcoded 1.75h, and is filtered out when a
+    normal connection (e.g. SFO -> IST -> ATH with a 3h 15m layover) is available.
+    """
+
+    class FakeResultList(list):  # type: ignore[type-arg]
+        pass
+
+    tap_28h_layover = SimpleNamespace(
+        type="multi",
+        price=3472,
+        airlines=["Tap Air Portugal", "Aegean"],
+        flights=[
+            SimpleNamespace(
+                from_airport=SimpleNamespace(code="SFO", name="San Francisco International Airport"),
+                to_airport=SimpleNamespace(code="LIS", name="Humberto Delgado Airport"),
+                departure=SimpleNamespace(date=(2026, 12, 11), time=(19, 15)),
+                arrival=SimpleNamespace(date=(2026, 12, 12), time=(14, 20)),
+                duration=665,
+                plane_type="Airbus A330neo",
+            ),
+            SimpleNamespace(
+                from_airport=SimpleNamespace(code="LIS", name="Humberto Delgado Airport"),
+                to_airport=SimpleNamespace(code="ATH", name="Athens International Airport"),
+                departure=SimpleNamespace(date=(2026, 12, 13), time=(19, 5)),
+                arrival=SimpleNamespace(date=(2026, 12, 14), time=(1, 0)),
+                duration=235,
+                plane_type="Airbus A321neo",
+            ),
+        ],
+    )
+    tk_3h_layover = SimpleNamespace(
+        type="multi",
+        price=5415,
+        airlines=["Turkish Airlines", "Aegean"],
+        flights=[
+            SimpleNamespace(
+                from_airport=SimpleNamespace(code="SFO", name="San Francisco International Airport"),
+                to_airport=SimpleNamespace(code="IST", name="Istanbul Airport"),
+                departure=SimpleNamespace(date=(2026, 12, 11), time=(18, 35)),
+                arrival=SimpleNamespace(date=(2026, 12, 12), time=(18, 45)),
+                duration=790,
+                plane_type="Boeing 777",
+            ),
+            SimpleNamespace(
+                from_airport=SimpleNamespace(code="IST", name="Istanbul Airport"),
+                to_airport=SimpleNamespace(code="ATH", name="Athens International Airport"),
+                departure=SimpleNamespace(date=(2026, 12, 12), time=(22, 0)),
+                arrival=SimpleNamespace(date=(2026, 12, 12), time=(22, 30)),
+                duration=90,
+                plane_type="Airbus A321",
+            ),
+        ],
+    )
+
+    # 1. When only the 28.75h layover exists, its exact 28.75h layover and segment dates are preserved
+    only_long = FakeResultList([tap_28h_layover])
+    only_long.metadata = SimpleNamespace(
+        airlines=[
+            SimpleNamespace(code="TP", name="Tap Air Portugal"),
+            SimpleNamespace(code="A3", name="Aegean"),
+        ],
+        alliances=[],
+    )
+    parsed_long = CompositeFlightProvider.parse_fast_flights_results(
+        only_long,
+        origin="SFO",
+        destination="ATH",
+        departure_date=date(2026, 12, 11),
+        cabin=ConcreteCabinClass.BUSINESS,
+    )
+    assert len(parsed_long) == 1
+    assert parsed_long[0].layover_hours == 28.75
+    assert parsed_long[0].duration_hours == 43.75
+    assert parsed_long[0].segments[1].departure_date == date(2026, 12, 13)
+
+    # 2. When both the 28.75h layover and the 3.25h layover exist, the 3.25h layover ranks first
+    # and filter_options_by_stops filters out the 28.75h layover under the default 6.0h policy
+    both = FakeResultList([tap_28h_layover, tk_3h_layover])
+    both.metadata = SimpleNamespace(
+        airlines=[
+            SimpleNamespace(code="TP", name="Tap Air Portugal"),
+            SimpleNamespace(code="TK", name="Turkish Airlines"),
+            SimpleNamespace(code="A3", name="Aegean"),
+        ],
+        alliances=[],
+    )
+    parsed_both = CompositeFlightProvider.parse_fast_flights_results(
+        both,
+        origin="SFO",
+        destination="ATH",
+        departure_date=date(2026, 12, 11),
+        cabin=ConcreteCabinClass.BUSINESS,
+    )
+    assert parsed_both[0].layover_airports == ["IST"]
+    assert parsed_both[0].layover_hours == 3.25
+
+    # 3. filter_options_by_stops respects custom max_layover_hours from StopsPolicy
+    filtered_default = filter_options_by_stops(
+        parsed_both, max_stops=1, max_layover_hours=StopsPolicy().max_layover_hours
+    )
+    assert len(filtered_default) == 1
+    assert filtered_default[0].layover_airports == ["IST"]
+
+    # If user customizes max_layover_hours to 30.0h, both options remain eligible in the cache
+    filtered_relaxed = filter_options_by_stops(parsed_both, max_stops=1, max_layover_hours=30.0)
+    assert len(filtered_relaxed) == 2
 
 
 def test_resolve_leg_max_stops_and_filtering() -> None:
