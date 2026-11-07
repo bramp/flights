@@ -58,6 +58,20 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert fare_1 == fare_2
     assert cache.get_stats().cache_hits == 2
 
+    # Multi-airport batch lookup falls back to granular_flights when leg_search_cache lacks the batch key
+    batch_results = cached_provider.search_leg_batch(
+        ("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS
+    )
+    assert len(batch_results) == len(first_results)
+    assert all(opt.from_cache for opt in batch_results)
+    assert cache.get_stats().cache_hits == 3
+
+    # Force-refresh on search_leg_batch increments session_misses
+    refresh_provider = CachedFlightProvider(delegate=raw_provider, cache=cache, force_refresh=True)
+    misses_before = cache.get_stats().cache_misses
+    refresh_provider.search_leg_batch(("SFO",), ("LHR",), dep_date, ConcreteCabinClass.BUSINESS)
+    assert cache.get_stats().cache_misses == misses_before + 1
+
     # Provider usage logging persists across clear_all()
     cache.record_provider_call("serpapi")
     cache.record_provider_call("serpapi")

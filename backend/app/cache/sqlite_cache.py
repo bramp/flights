@@ -178,24 +178,30 @@ class FlightCache:
                         record_observed_duration(seg.origin, seg.destination, seg.duration_hours)
                 return options
 
-            # Fallback: check granular_flights table
-            rows = conn.execute(
-                """
-                SELECT payload_json, updated_at
-                FROM granular_flights
-                WHERE origin = ? AND destination = ? AND departure_date = ? AND cabin = ?
-                """,
-                (origin.upper(), destination.upper(), departure_date.isoformat(), cabin.value),
-            ).fetchall()
-            valid_rows = [r for r in rows if (now - float(r["updated_at"])) <= self.ttl_seconds]
-            if valid_rows:
-                self.session_hits += 1
-                options = [FlightLegOption.model_validate(json.loads(r["payload_json"])) for r in valid_rows]
-                for opt in options:
-                    opt.from_cache = True
-                    for seg in opt.segments:
-                        record_observed_duration(seg.origin, seg.destination, seg.duration_hours)
-                return options
+            # Fallback: check granular_flights table (supports comma-separated multi-airport batch keys)
+            orig_codes = [c.strip().upper() for c in origin.split(",") if c.strip()]
+            dest_codes = [c.strip().upper() for c in destination.split(",") if c.strip()]
+            if orig_codes and dest_codes:
+                rows = conn.execute(
+                    """
+                    SELECT payload_json, updated_at
+                    FROM granular_flights
+                    WHERE origin IN (SELECT value FROM json_each(?))
+                      AND destination IN (SELECT value FROM json_each(?))
+                      AND departure_date = ?
+                      AND cabin = ?
+                    """,
+                    (json.dumps(orig_codes), json.dumps(dest_codes), departure_date.isoformat(), cabin.value),
+                ).fetchall()
+                valid_rows = [r for r in rows if (now - float(r["updated_at"])) <= self.ttl_seconds]
+                if valid_rows:
+                    self.session_hits += 1
+                    options = [FlightLegOption.model_validate(json.loads(r["payload_json"])) for r in valid_rows]
+                    for opt in options:
+                        opt.from_cache = True
+                        for seg in opt.segments:
+                            record_observed_duration(seg.origin, seg.destination, seg.duration_hours)
+                    return options
 
         self.session_misses += 1
         return None

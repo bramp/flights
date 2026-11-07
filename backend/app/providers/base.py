@@ -252,6 +252,8 @@ class CachedFlightProvider(FlightSearchProvider):
             if cached is not None:
                 results = cached
             else:
+                if self.force_refresh:
+                    self.cache.session_misses += 1
                 results = self.delegate.search_leg_batch(clean_origs, clean_dests, departure_date, cabin)
                 if results:
                     self.cache.store_leg_options(batch_orig_key, batch_dest_key, departure_date, cabin, results)

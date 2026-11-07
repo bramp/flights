@@ -139,6 +139,13 @@ def test_optimize_rejects_degenerate_same_airport_stop() -> None:
     assert resp.status_code == 400
     assert "No valid flight combinations" in resp.json()["detail"]
 
+    stream_resp = client.post("/api/optimize", json=bad_payload, headers={"X-Stream-Progress": "1"})
+    assert stream_resp.status_code == 200
+    stream_events = [json.loads(line) for line in stream_resp.text.splitlines() if line.strip()]
+    error_events = [e for e in stream_events if e["type"] == "error"]
+    assert len(error_events) == 1
+    assert "No valid flight combinations" in error_events[0]["detail"]
+
 
 def test_optimize_streams_progress_events_and_final_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FARESPLIT_TESTING", "1")

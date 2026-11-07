@@ -148,7 +148,39 @@ test("Optimize submits edited inputs, shows loading and clears stale results", a
   const responseGate = new Promise((resolve) => { releaseResponse = resolve; });
   await page.route("**/api/optimize", async (route) => {
     await responseGate;
-    await route.fulfill({ json: optimizationResponse() });
+    const ndjsonLines = [
+      JSON.stringify({
+        type: "progress",
+        phase: "query_done",
+        current_query: "SFO → ATH (2026-12-11 · Business)",
+        queries_completed: 3,
+        queries_total: 8,
+        schedule_index: 1,
+        schedules_total: 4,
+        schedule_route: "SFO → ATH → JTR → LHR → SFO",
+        strategy_label: "Anchor Open-Jaw + Regional Hops",
+        cache_hits: 2,
+        live_calls: 1,
+        progress_pct: 42,
+        last_query: {
+          query: "SFO → ATH (2026-12-11 · Business)",
+          route: "SFO → ATH",
+          date: "2026-12-11",
+          cabin: "Business",
+          options_count: 5,
+          source: "live",
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        data: optimizationResponse(),
+      }),
+    ].join("\n") + "\n";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson",
+      body: ndjsonLines,
+    });
   });
   const requestPromise = page.waitForRequest("**/api/optimize");
   await page.locator("#optimizeBtn").click();

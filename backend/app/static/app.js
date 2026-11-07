@@ -1679,9 +1679,9 @@ function estimateInitialQueryPlan(payload) {
       cabin: formatCabinName(resolved.cabin),
       label: `${prevAirports.join(", ")} → ${nextAirports.join(", ")} (${curDate} · ${formatCabinName(resolved.cabin)})`,
     });
-    const d = new Date(`${curDate}T00:00:00`);
+    const d = new Date(`${curDate}T00:00:00Z`);
     if (!isNaN(d)) {
-      d.setDate(d.getDate() + Number(stops[i].min_nights || 3));
+      d.setUTCDate(d.getUTCDate() + Number(stops[i].min_nights || 3));
       curDate = d.toISOString().slice(0, 10);
     }
   }
@@ -1900,8 +1900,22 @@ async function runOptimization() {
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      const errData = await resp.json();
-      throw new Error(errData.detail ? JSON.stringify(errData.detail) : resp.statusText);
+      let detail = resp.statusText || `HTTP ${resp.status}`;
+      const errText = await resp.text().catch(() => "");
+      if (errText) {
+        try {
+          const errData = JSON.parse(errText);
+          if (errData && errData.detail) {
+            detail =
+              typeof errData.detail === "string"
+                ? errData.detail
+                : JSON.stringify(errData.detail);
+          }
+        } catch {
+          detail = errText;
+        }
+      }
+      throw new Error(detail);
     }
 
     const contentType = resp.headers.get("content-type") || "";

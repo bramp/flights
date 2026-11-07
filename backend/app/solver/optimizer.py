@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from backend.app.cache.sqlite_cache import FlightCache
-from backend.app.data.airports import candidate_intermediate_hubs
 from backend.app.models.schemas import (
     EvaluatedItinerary,
     OptimizationResponse,
@@ -43,7 +42,10 @@ def _collect_planned_query_keys(
     request: TripRequest,
     cache: FlightCache,
 ) -> set[str]:
-    """Pre-compute the distinct flight leg query keys planned across all candidate schedules."""
+    """Pre-compute the distinct flight leg query keys planned across all candidate schedules.
+    Dynamic hub-split sub-queries are registered on-the-fly by `CachedFlightProvider.search_leg`
+    as corridor hubs are discovered from actual flight layovers.
+    """
     keys: set[str] = set()
     for sched in schedules:
         if not sched.legs:
@@ -70,24 +72,6 @@ def _collect_planned_query_keys(
             dest_key = ",".join(clean_dests)
             keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, uniform_cabin))
             keys.add(cache.make_leg_key(orig_key, dest_key, leg_spec.departure_date, leg_cabin))
-
-        if request.weights.enable_hub_splitting and len(sched.legs) >= 2:
-            first_spec = sched.legs[0]
-            orig_code = first_spec.origin_airports[0].strip().upper()
-            first_dest_code = first_spec.destination_airports[0].strip().upper()
-            first_max_stops = resolve_leg_max_stops(
-                orig_code, first_dest_code, first_spec.requested_stops, request.stops_policy
-            )
-            if first_max_stops != 0:
-                for hub_code in candidate_intermediate_hubs(orig_code, first_dest_code, max_hubs=2):
-                    if hub_code in first_spec.destination_airports or hub_code in first_spec.origin_airports:
-                        continue
-                    cabin_0a = resolve_leg_cabin(orig_code, hub_code, first_spec.requested_cabin, request.cabin_policy)
-                    cabin_0b = resolve_leg_cabin(
-                        hub_code, first_dest_code, first_spec.requested_cabin, request.cabin_policy
-                    )
-                    keys.add(cache.make_leg_key(orig_code, hub_code, first_spec.departure_date, cabin_0a))
-                    keys.add(cache.make_leg_key(hub_code, first_dest_code, first_spec.departure_date, cabin_0b))
 
     return keys
 

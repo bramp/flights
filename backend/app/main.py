@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -38,6 +39,8 @@ flight_cache = FlightCache(
     db_path="flights_cache.db",
     ttl_seconds=int(float(os.environ.get("FLIGHT_CACHE_TTL_DAYS", "7")) * 86400),
 )
+_optimize_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 flight_provider = CompositeFlightProvider()
 
 
@@ -120,32 +123,44 @@ def clear_cache() -> CacheStats:
 
 def _stream_optimization_events(request: TripRequest) -> Iterator[str]:
     event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+    cancelled = threading.Event()
 
     def on_progress(event: dict[str, object]) -> None:
+        if cancelled.is_set():
+            raise InterruptedError("Client disconnected")
         event_queue.put({"type": "progress", **event})
 
     def worker() -> None:
         try:
-            result = optimize_trip(
-                request,
-                raw_provider=flight_provider,
-                cache=flight_cache,
-                progress_callback=on_progress,
-            )
+            with _optimize_lock:
+                result = optimize_trip(
+                    request,
+                    raw_provider=flight_provider,
+                    cache=flight_cache,
+                    progress_callback=on_progress,
+                )
             event_queue.put({"type": "result", "data": result.model_dump(mode="json")})
-        except Exception as exc:  # noqa: BLE001
+        except InterruptedError:
+            return
+        except ValueError as exc:
             event_queue.put({"type": "error", "detail": str(exc)})
+        except Exception:
+            logger.exception("Unexpected error during streaming optimization")
+            event_queue.put({"type": "error", "detail": "An internal error occurred during optimization."})
         finally:
             event_queue.put(None)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
 
-    while True:
-        item = event_queue.get()
-        if item is None:
-            break
-        yield json.dumps(item) + "\n"
+    try:
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield json.dumps(item) + "\n"
+    finally:
+        cancelled.set()
 
 
 @app.post("/api/optimize", response_model=OptimizationResponse)
@@ -160,7 +175,8 @@ def run_optimization(request: TripRequest, raw_request: Request) -> Optimization
         )
 
     try:
-        return optimize_trip(request, raw_provider=flight_provider, cache=flight_cache)
+        with _optimize_lock:
+            return optimize_trip(request, raw_provider=flight_provider, cache=flight_cache)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
