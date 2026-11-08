@@ -317,6 +317,40 @@ def test_malformed_fast_flights_response_is_a_provider_failure(
         assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is None
 
 
+@pytest.mark.parametrize("empty_group", [None, [], [None], [[]]])
+def test_fast_flights_accepts_missing_result_groups(
+    empty_group: object, fast_flights_html: Callable[[object], str]
+) -> None:
+    parsed = parse_fast_flights(fast_flights_html(empty_group))
+    assert parsed == []
+    assert parsed.metadata.airlines == []
+
+
+def test_fast_flights_skips_unpriced_itineraries(fast_flights_html: Callable[[object], str]) -> None:
+    segment: list[object] = [None] * 22
+    segment[3:7] = ["AAA", "Origin", "Destination", "BBB"]
+    segment[8], segment[10] = [9], [11]
+    segment[11], segment[17] = 120, "Test aircraft"
+    segment[20] = segment[21] = [2026, 10, 1]
+    flight: list[object] = [None] * 23
+    flight[0:3] = ["nonstop", ["Test Airline"], [segment]]
+    flight[22] = [None] * 7 + [100000, 120000]
+    parsed = parse_fast_flights(fast_flights_html([[[flight, []]]]))
+
+    assert len(parsed) == 1
+    assert parsed[0].price is None
+    assert (
+        CompositeFlightProvider.parse_fast_flights_results(
+            parsed,
+            "AAA",
+            "BBB",
+            date(2026, 10, 1),
+            ConcreteCabinClass.ECONOMY,
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize("error_type", [IndexError, TypeError, AttributeError, KeyError, ValueError])
 def test_fast_flights_adapter_errors_still_propagate(
     monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]

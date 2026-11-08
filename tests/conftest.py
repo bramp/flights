@@ -17,8 +17,6 @@ def _flight_payload(results: object) -> list[object]:
 
 
 MALFORMED_RESPONSES: dict[str, tuple[str, type[Exception]]] = {
-    "null-results": (_response_html(_flight_payload(None)), TypeError),
-    "missing-fare": (_response_html(_flight_payload([[[[], [[]]]]])), IndexError),
     "missing-script": ("<html><body>Temporarily unavailable</body></html>", AttributeError),
     "missing-data": ('<script class="ds:1">AF_initDataCallback({});</script>', IndexError),
     "invalid-json": (

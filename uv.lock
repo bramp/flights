@@ -212,15 +212,11 @@ wheels = [
 [[package]]
 name = "fast-flights"
 version = "3.1.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/AWeirdDev/flights.git?rev=64c9190bfdfb33bbe6e260ea08ff15c0ddcf74e8#64c9190bfdfb33bbe6e260ea08ff15c0ddcf74e8" }
 dependencies = [
     { name = "primp" },
     { name = "protobuf" },
     { name = "selectolax" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/40/a8355032a1bd40bae23a8b94cd8019fb0567df7ca32c19b37a7c256912a0/fast_flights-3.1.0.tar.gz", hash = "sha256:3a0e279312b0dedbe7a83af2c10c7c984a792a93050ff69c33d996f703dfd706", size = 22154, upload-time = "2026-08-18T07:31:26.099Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/20/cb/60419fedc21fb664baf753912b4645deb38ee7653e11fbde3728ed84464c/fast_flights-3.1.0-py3-none-any.whl", hash = "sha256:90c629646a591ff04a9f164ba651432f595232c3537cda5275db25c07283429a", size = 22966, upload-time = "2026-08-18T07:31:24.862Z" },
 ]
 
 [[package]]
@@ -275,7 +271,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fast-flights", specifier = ">=3.1.0" },
+    { name = "fast-flights", git = "https://github.com/AWeirdDev/flights.git?rev=64c9190bfdfb33bbe6e260ea08ff15c0ddcf74e8" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "primp", specifier = ">=2.0.0" },
