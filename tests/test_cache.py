@@ -266,6 +266,62 @@ def test_fast_flights_retry_budget_is_reported_as_partial(monkeypatch: pytest.Mo
     assert len(calls) == provider.api_calls_this_run == 1
 
 
+@pytest.mark.parametrize("mode", [ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO])
+@pytest.mark.parametrize("empty_first_attempt", [False, True])
+def test_fast_flights_parser_index_error_is_a_provider_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: ProviderMode, empty_first_attempt: bool
+) -> None:
+    cache = FlightCache(tmp_path / "parser-error.db")
+    provider = CompositeFlightProvider(cache=cache, mode=mode, rate_limit_seconds=0)
+    provider.serpapi_key = "test-key"
+    query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    recovered = MockLiveProvider().search(query).options[0].model_copy(update={"provider": "serpapi"})
+    fast_calls: list[object] = []
+    serp_calls: list[str] = []
+
+    def malformed_response(query: object) -> list[object]:
+        fast_calls.append(query)
+        if empty_first_attempt and len(fast_calls) == 1:
+            return []
+        raise IndexError("list index out of range")
+
+    def recover(*_args: object) -> list[FlightLegOption]:
+        serp_calls.append("serpapi")
+        return [recovered]
+
+    monkeypatch.setattr("backend.app.providers.google_flights.get_flights", malformed_response)
+    monkeypatch.setattr(provider, "_search_serpapi_google_flights", recover)
+    result = CachedFlightProvider(provider, cache).search(query)
+    assert len(fast_calls) == cache.get_stats().fast_flights_calls_this_run == (2 if empty_first_attempt else 1)
+    assert result.issues[0].kind == SearchIssueKind.PROVIDER_ERROR
+    assert "unable to parse response (IndexError)" in result.issues[0].message
+    if mode == ProviderMode.AUTO:
+        assert result.status == SearchStatus.COMPLETE
+        assert result.options == (recovered,)
+        assert serp_calls == ["serpapi"]
+        assert CachedFlightProvider(provider, cache).search(query).options[0].from_cache
+    else:
+        assert result.status == SearchStatus.FAILED
+        assert not result.options
+        assert not serp_calls
+        assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is None
+
+
+def test_fast_flights_adapter_index_error_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, rate_limit_seconds=0)
+
+    def fetched(_query: object) -> list[object]:
+        return [object()]
+
+    def broken(**_kwargs: object) -> list[FlightLegOption]:
+        raise IndexError("adapter implementation error")
+
+    monkeypatch.setattr("backend.app.providers.google_flights.get_flights", fetched)
+    monkeypatch.setattr(provider, "parse_fast_flights_results", broken)
+    with pytest.raises(IndexError, match="adapter implementation error"):
+        provider.search(LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS))
+
+
 @pytest.mark.parametrize("status_code", [200, 403])
 def test_serpapi_error_response_is_not_empty_availability(monkeypatch: pytest.MonkeyPatch, status_code: int) -> None:
     provider = CompositeFlightProvider(mode=ProviderMode.SERPAPI, rate_limit_seconds=0)

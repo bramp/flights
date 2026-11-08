@@ -485,8 +485,8 @@ class CompositeFlightProvider(FlightSearchProvider):
             self.cache.record_provider_call("fast_flights")
             self.cache.active_provider = "fast_flights"
 
-        def _build_query(layover_limit: int | None) -> Any:
-            return create_query(
+        def _fetch_results(layover_limit: int | None) -> list[Any]:
+            query = create_query(
                 flights=[
                     FlightQuery(
                         date=departure_date.isoformat(),
@@ -502,11 +502,15 @@ class CompositeFlightProvider(FlightSearchProvider):
                 language="en",
                 hide_separate_and_self_transfer=True,
             )
+            try:
+                return get_flights(query)
+            except IndexError as exc:
+                raise _ProviderResponseError("unable to parse response (IndexError)") from exc
 
         default_cap_hours = StopsPolicy().max_layover_hours
         effective_hours = max(self.max_layover_hours, default_cap_hours)
         layover_mins = round(effective_hours * 60.0) if effective_hours > 0 else None
-        result_list: list[Any] = get_flights(_build_query(layover_mins))
+        result_list = _fetch_results(layover_mins)
 
         # If strict layover cap yielded no flights on this corridor, retry without the layover cap
         if not result_list and layover_mins is not None:
@@ -516,7 +520,7 @@ class CompositeFlightProvider(FlightSearchProvider):
             self.api_calls_this_run += 1
             if self.cache is not None:
                 self.cache.record_provider_call("fast_flights")
-            result_list = get_flights(_build_query(None))
+            result_list = _fetch_results(None)
 
         return self.parse_fast_flights_results(
             results=result_list,

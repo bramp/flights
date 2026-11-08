@@ -111,6 +111,8 @@ Live modes never fall back to simulated flights. Unavailable lookups or exhauste
 query limits produce fewer results or an error, not fake availability.
 Incomplete searches report warnings and are not saved as complete cached answers.
 This includes airport pairs skipped by the quota-saving shortlist.
+Malformed fast-flights parser responses are reported as provider failures;
+Auto mode can fall back to SerpApi when a key and query budget are available.
 
 ### Test-Only Simulation
 Simulation is disabled by default, including for direct API requests. For a dedicated
