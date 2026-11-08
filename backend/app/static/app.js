@@ -990,8 +990,10 @@ function getActiveItineraryScheduledMap() {
   const scheduledByStopId = new Map();
   let actualDepartureDate = null;
   let actualReturnDate = null;
+  let activeStopVisits = [];
+  let activeLegs = [];
   if (!currentOptimizationResponse) {
-    return { scheduledByStopId, actualDepartureDate, actualReturnDate };
+    return { scheduledByStopId, actualDepartureDate, actualReturnDate, activeStopVisits, activeLegs };
   }
 
   const allById = new Map();
@@ -1004,25 +1006,72 @@ function getActiveItineraryScheduledMap() {
   });
   const activeItin = allById.get(selectedItineraryId) || currentOptimizationResponse.recommended;
   if (!activeItin) {
-    return { scheduledByStopId, actualDepartureDate, actualReturnDate };
+    return { scheduledByStopId, actualDepartureDate, actualReturnDate, activeStopVisits, activeLegs };
   }
 
+  activeStopVisits = activeItin.stop_visits || [];
+  activeLegs = activeItin.legs || [];
   if (activeItin.legs && activeItin.legs.length > 0) {
     actualDepartureDate = activeItin.legs[0].departure_date;
     actualReturnDate = activeItin.legs[activeItin.legs.length - 1].departure_date;
   }
 
-  if (activeItin.stop_visits) {
-    activeItin.stop_visits.forEach((v) => {
-      scheduledByStopId.set(v.stop_id, {
-        arrival: v.arrival_date,
-        departure: v.departure_date,
-        airport: v.arrival_airport,
-        nights: v.nights,
+  if (activeStopVisits.length > 0) {
+    activeStopVisits.forEach((visit) => {
+      scheduledByStopId.set(visit.stop_id, {
+        arrival: visit.arrival_date,
+        departure: visit.departure_date,
+        airport: visit.arrival_airport,
+        nights: visit.nights,
       });
     });
   }
-  return { scheduledByStopId, actualDepartureDate, actualReturnDate };
+  return { scheduledByStopId, actualDepartureDate, actualReturnDate, activeStopVisits, activeLegs };
+}
+
+function getFlexiblePredecessorLabels(stopIndex) {
+  if (state.ordering_mode === "auto_tsp") {
+    const labels = [
+      state.origin_label,
+      ...state.stops.filter((_, index) => index !== stopIndex).map((stop) => stop.label),
+    ];
+    return labels.length > 3 ? ["Any stop"] : [...new Set(labels.filter(Boolean))];
+  }
+  if (state.ordering_mode !== "flexible") return [];
+
+  let groupStart = stopIndex;
+  while (groupStart > 0 && !state.stops[groupStart - 1].fixed_order) groupStart--;
+  if (state.stops[stopIndex].fixed_order) {
+    const precedingFlexStops = state.stops
+      .slice(groupStart, stopIndex)
+      .filter((stop) => !stop.fixed_order)
+      .map((stop) => stop.label);
+    if (precedingFlexStops.length > 0) return [...new Set(precedingFlexStops.filter(Boolean))];
+    return [groupStart > 0 ? state.stops[groupStart - 1].label : state.origin_label].filter(Boolean);
+  }
+
+  let groupEnd = stopIndex;
+  while (groupEnd + 1 < state.stops.length && !state.stops[groupEnd + 1].fixed_order) groupEnd++;
+  const otherFlexStops = state.stops
+    .slice(groupStart, groupEnd + 1)
+    .filter((stop, index) => !stop.fixed_order && groupStart + index !== stopIndex)
+    .map((stop) => stop.label);
+  const boundary = groupStart > 0 ? state.stops[groupStart - 1].label : state.origin_label;
+  const labels = [boundary, ...otherFlexStops].filter(Boolean);
+  return labels.length > 3 ? ["Any stop"] : [...new Set(labels)];
+}
+
+function getFlexibleFinalStopLabels() {
+  if (state.ordering_mode === "auto_tsp") {
+    const labels = state.stops.map((stop) => stop.label).filter(Boolean);
+    return labels.length > 3 ? ["Any stop"] : [...new Set(labels)];
+  }
+  if (state.ordering_mode !== "flexible" || state.stops.length === 0) return [];
+
+  let lastFixedIndex = state.stops.findLastIndex((stop) => stop.fixed_order);
+  const flexibleTail = state.stops.slice(lastFixedIndex + 1).map((stop) => stop.label).filter(Boolean);
+  if (flexibleTail.length > 0) return flexibleTail.length > 3 ? ["Any stop"] : [...new Set(flexibleTail)];
+  return lastFixedIndex >= 0 ? [state.stops[lastFixedIndex].label].filter(Boolean) : [];
 }
 
 /**
@@ -1217,6 +1266,8 @@ function createFlightConnectorRow({
   fromCode,
   toCode,
   isFlexibleTarget,
+  flexibleFromLabels = [],
+  flexibleToLabel = "",
   currentCabin,
   onSelectCabin,
   currentStops = "auto",
@@ -1242,9 +1293,12 @@ function createFlightConnectorRow({
     { value: "any", label: "Any" },
   ];
 
-  const routeDisplay = isFlexibleTarget
-    ? `✈️ ${escapeHtml(legLabel)}: <strong>→ ${escapeHtml(toCode)}</strong> <span style="font-weight:400; color:#64748b">(inbound leg)</span>`
-    : `✈️ ${escapeHtml(legLabel)}: <strong>${escapeHtml(fromCode)} → ${escapeHtml(toCode)}</strong>`;
+  const routeDisplay =
+    flexibleFromLabels.length > 1 || flexibleFromLabels[0] === "Any stop"
+      ? `✈️ ${escapeHtml(legLabel)}: <strong>${flexibleFromLabels.map(escapeHtml).join(" or ")} → ${escapeHtml(flexibleToLabel)}</strong>`
+      : isFlexibleTarget
+        ? `✈️ ${escapeHtml(legLabel)}: <strong>→ ${escapeHtml(toCode)}</strong>`
+        : `✈️ ${escapeHtml(legLabel)}: <strong>${escapeHtml(fromCode)} → ${escapeHtml(toCode)}</strong>`;
 
   const autoNotes = [];
   if (currentCabin === "auto") autoNotes.push(resolved.autoReason);
@@ -1358,7 +1412,7 @@ function renderBuilder() {
   matrixEl.innerHTML = "";
 
   const tripDates = getTripDatesArray(state.earliest_departure, state.latest_return);
-  const { scheduledByStopId, actualDepartureDate, actualReturnDate } =
+  const { scheduledByStopId, actualDepartureDate, actualReturnDate, activeStopVisits, activeLegs } =
     getActiveItineraryScheduledMap();
 
   if (!state.latest_departure || state.latest_departure < state.earliest_departure) {
@@ -1459,13 +1513,22 @@ function renderBuilder() {
     const isFlexibleTarget =
       state.ordering_mode === "auto_tsp" ||
       (state.ordering_mode === "flexible" && !stop.fixed_order);
+    const activeVisitIndex = activeStopVisits.findIndex((visit) => visit.stop_id === stop.id);
+    const activeVisit = !resultsStale && activeVisitIndex >= 0 ? activeStopVisits[activeVisitIndex] : null;
+    const previousVisit = activeVisitIndex > 0 ? activeStopVisits[activeVisitIndex - 1] : null;
+    const actualFromCode = activeVisit
+      ? previousVisit?.departure_airport || activeLegs[0]?.origin || state.origin_airports[0]
+      : null;
+    const actualToCode = activeVisit?.arrival_airport || null;
 
     // Flight Connector Row BEFORE Stop `idx`
     const connector = createFlightConnectorRow({
       legLabel: `Flight ${idx + 1}`,
-      fromCode: prevCode,
-      toCode: currCode,
-      isFlexibleTarget,
+      fromCode: actualFromCode || prevCode,
+      toCode: actualToCode || currCode,
+      isFlexibleTarget: activeVisit ? false : isFlexibleTarget,
+      flexibleFromLabels: activeVisit ? [] : getFlexiblePredecessorLabels(idx),
+      flexibleToLabel: stop.label,
       currentCabin: stop.outbound_cabin || "auto",
       onSelectCabin: (val) => {
         stop.outbound_cabin = val;
@@ -1583,12 +1646,19 @@ function renderBuilder() {
   const lastStop = state.stops[state.stops.length - 1];
   const lastFromCode = lastStop ? lastStop.airports[0] : state.origin_airports[0];
   const destCode = state.destination_airports[0] || state.origin_airports[0];
+  const lastVisit = activeStopVisits[activeStopVisits.length - 1];
+  const lastLeg = activeLegs[activeLegs.length - 1];
+  const actualReturnFrom = !resultsStale ? lastVisit?.departure_airport || lastLeg?.origin : null;
+  const actualReturnTo = !resultsStale ? lastLeg?.destination : null;
+  const flexibleFinalLabels = !resultsStale ? [] : getFlexibleFinalStopLabels();
 
   const returnConnector = createFlightConnectorRow({
     legLabel: `Return Flight`,
-    fromCode: lastFromCode,
-    toCode: destCode,
+    fromCode: actualReturnFrom || lastFromCode,
+    toCode: actualReturnTo || destCode,
     isFlexibleTarget: false,
+    flexibleFromLabels: flexibleFinalLabels,
+    flexibleToLabel: state.destination_label,
     currentCabin: state.return_leg_cabin || "auto",
     onSelectCabin: (val) => {
       state.return_leg_cabin = val;

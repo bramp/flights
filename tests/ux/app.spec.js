@@ -44,16 +44,41 @@ function optimizationResponse(provider = "mock") {
     strategy_description: "All flights on one protected booking.",
     badges: ["Recommended"],
     route_summary: "SFO - ATH - JTR - LHR - SFO",
-    stop_visits: [{
-      stop_id: "stop-ath",
-      label: "Athens",
-      arrival_airport: "ATH",
-      departure_airport: "ATH",
-      arrival_date: "2026-12-12",
-      departure_date: "2026-12-15",
-      nights: 3,
-    }],
-    legs: [leg],
+    stop_visits: [
+      {
+        stop_id: "stop-ath",
+        label: "Athens",
+        arrival_airport: "ATH",
+        departure_airport: "ATH",
+        arrival_date: "2026-12-12",
+        departure_date: "2026-12-15",
+        nights: 3,
+      },
+      {
+        stop_id: "stop-jtr",
+        label: "Santorini",
+        arrival_airport: "JTR",
+        departure_airport: "JTR",
+        arrival_date: "2026-12-16",
+        departure_date: "2026-12-18",
+        nights: 2,
+      },
+      {
+        stop_id: "stop-lon-dec",
+        label: "London",
+        arrival_airport: "LHR",
+        departure_airport: "LGW",
+        arrival_date: "2026-12-19",
+        departure_date: "2026-12-24",
+        nights: 5,
+      },
+    ],
+    legs: [
+      { ...leg, origin: "SFO", destination: "ATH", departure_date: "2026-12-11" },
+      { ...leg, origin: "ATH", destination: "JTR", departure_date: "2026-12-15" },
+      { ...leg, origin: "JTR", destination: "LHR", departure_date: "2026-12-18" },
+      { ...leg, origin: "LGW", destination: "SFO", departure_date: "2026-12-24" },
+    ],
     tickets: [{
       label: "Protected multi-city booking",
       airline_or_alliance: "Test Airways",
@@ -166,7 +191,22 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
     "href",
     "https://www.google.com/travel/flights/search?tfs=test&hl=en&curr=USD"
   );
-  await expect(page.getByText("Optimization Error", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Optimization Error", { exact: true })).toHaveCount(0  );
+});
+
+test("flexible flight connector names candidate cities until the route is optimized", async ({ page }) => {
+  const londonInbound = page.locator(".flight-connector-row").nth(2);
+  await page.locator("#presetSelect").selectOption("greece_london");
+  await expect(londonInbound).toContainText("Athens or Santorini → London");
+
+  await page.locator("#orderingModeSelect").selectOption("fixed");
+  await expect(londonInbound).toContainText("JTR → LHR");
+  await page.locator("#orderingModeSelect").selectOption("flexible");
+  await expect(londonInbound).toContainText("Athens or Santorini → London");
+
+  await page.locator("#optimizeBtn").click();
+  await expect(page.locator(".itinerary-hero h2")).toHaveText("Single Multi-City Ticket");
+  await expect(londonInbound).toContainText("JTR → LHR");
 });
 
 for (const transport of ["json", "ndjson"]) {
