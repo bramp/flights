@@ -11,7 +11,7 @@ from backend.app.data.airports import (
     get_airport,
     haversine_km,
 )
-from backend.app.models.queries import LegSearch
+from backend.app.models.queries import LegSearch, SearchResult
 from backend.app.models.schemas import (
     ConcreteCabinClass,
     FlightLegOption,
@@ -166,12 +166,12 @@ class RealisticPricingProvider(FlightSearchProvider):
     def is_simulation(self) -> bool:
         return True
 
-    def search(self, query: LegSearch) -> list[FlightLegOption]:
+    def search(self, query: LegSearch) -> SearchResult:
         results: list[FlightLegOption] = []
         for origin in query.origins:
             for destination in query.destinations:
                 results.extend(self._search_pair(origin, destination, query.departure_date, query.cabin))
-        return results
+        return SearchResult(options=tuple(results))
 
     def _search_pair(
         self,

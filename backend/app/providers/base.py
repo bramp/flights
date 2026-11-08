@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from backend.app.cache.sqlite_cache import FlightCache
-from backend.app.models.queries import LegSearch
+from backend.app.models.queries import LegSearch, SearchIssue, SearchResult
 from backend.app.models.schemas import FlightLegOption, TicketType
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -24,8 +24,8 @@ class FlightSearchProvider(ABC):
         return f"{type(self).__module__}.{type(self).__qualname__}"
 
     @abstractmethod
-    def search(self, query: LegSearch) -> list[FlightLegOption]:
-        """Return candidate flight options for the allowed airports, date, and cabin."""
+    def search(self, query: LegSearch) -> SearchResult:
+        """Return candidate flights and whether the requested search completed."""
 
     def quote_multi_slice_ticket(
         self,
@@ -78,7 +78,8 @@ class CachedFlightProvider(FlightSearchProvider):
         self.progress_callback = progress_callback
         self.planned_queries: set[LegSearch] = set(planned_queries) if planned_queries else set()
         self.completed_queries: set[LegSearch] = set()
-        self._run_results: dict[LegSearch, list[FlightLegOption]] = {}
+        self._run_results: dict[LegSearch, SearchResult] = {}
+        self.search_issues: list[SearchIssue] = []
         self._provider_scope = delegate.cache_scope()
         self.schedule_index: int = 1
         self.schedules_total: int = 1
@@ -134,9 +135,9 @@ class CachedFlightProvider(FlightSearchProvider):
             payload["last_query"] = last_query
         self.progress_callback(payload)
 
-    def search(self, query: LegSearch) -> list[FlightLegOption]:
+    def search(self, query: LegSearch) -> SearchResult:
         if query in self._run_results:
-            return list(self._run_results[query])
+            return self._run_results[query]
 
         query_label = self.format_query_label(query)
         self.planned_queries.add(query)
@@ -150,15 +151,15 @@ class CachedFlightProvider(FlightSearchProvider):
                 None if self.force_refresh else self.cache.get_leg_options(query, provider_scope=self._provider_scope)
             )
             if cached is not None:
-                results = cached
+                results = SearchResult(options=tuple(cached))
             else:
                 if self.force_refresh:
                     self.cache.session_misses += 1
                 results = self.delegate.search(query)
-                if results:
-                    self.cache.store_leg_options(query, results, provider_scope=self._provider_scope)
+                self.cache.store_leg_options(query, results, provider_scope=self._provider_scope)
 
-        self._run_results[query] = list(results)
+        self._run_results[query] = results
+        self.search_issues.extend(results.issues)
         self.completed_queries.add(query)
         source = (
             "simulated"
@@ -173,11 +174,12 @@ class CachedFlightProvider(FlightSearchProvider):
                 "route": f"{', '.join(query.origins)} → {', '.join(query.destinations)}",
                 "date": query.departure_date.isoformat(),
                 "cabin": query.cabin.value.replace("_", " ").title(),
-                "options_count": len(results),
+                "options_count": len(results.options),
+                "status": results.status.value,
                 "source": source,
             },
         )
-        return list(results)
+        return results
 
     def quote_multi_slice_ticket(
         self,

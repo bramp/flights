@@ -152,8 +152,7 @@ def optimize_trip(
         )
         all_evaluated.extend(partitions)
 
-    if isinstance(raw_provider, CompositeFlightProvider) and raw_provider.warnings:
-        warnings.extend(raw_provider.warnings)
+    warnings.extend(dict.fromkeys(issue.message for issue in cached_provider.search_issues))
 
     if not all_evaluated:
         raise ValueError(

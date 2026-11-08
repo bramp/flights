@@ -104,8 +104,12 @@ def evaluate_hub_split_candidates(
         # Fetch Origin -> Hub (Leg 0a) and Hub -> Stop 1 (Leg 0b)
         cabin_0a = resolve_leg_cabin(orig_code, hub_code, first_spec.requested_cabin, request.cabin_policy)
         cabin_0b = resolve_leg_cabin(hub_code, first_dest_code, first_spec.requested_cabin, request.cabin_policy)
-        raw_0a = provider.search(LegSearch.single(orig_code, hub_code, first_spec.departure_date, cabin_0a))
-        raw_0b = provider.search(LegSearch.single(hub_code, first_dest_code, first_spec.departure_date, cabin_0b))
+        raw_0a = list(
+            provider.search(LegSearch.single(orig_code, hub_code, first_spec.departure_date, cabin_0a)).options
+        )
+        raw_0b = list(
+            provider.search(LegSearch.single(hub_code, first_dest_code, first_spec.departure_date, cabin_0b)).options
+        )
         if not raw_0a or not raw_0b:
             continue
 

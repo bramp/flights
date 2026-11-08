@@ -55,7 +55,7 @@ def _fetch_all_airport_pair_options(
     if len(origs) == 1 and len(dests) == 1 and origs[0].upper() == dests[0].upper():
         return []
     cabin = cabin_override or resolve_leg_cabin(origs[0], dests[0], leg_spec.requested_cabin, request.cabin_policy)
-    raw_options = provider.search(LegSearch(origs, dests, leg_spec.departure_date, cabin))
+    raw_options = list(provider.search(LegSearch(origs, dests, leg_spec.departure_date, cabin)).options)
     max_stops = resolve_leg_max_stops(
         origs[0], dests[0], leg_spec.requested_stops, request.stops_policy, options=raw_options
     )

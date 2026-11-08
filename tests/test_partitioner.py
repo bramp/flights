@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from backend.app.cache.sqlite_cache import FlightCache
-from backend.app.models.queries import LegSearch
+from backend.app.models.queries import LegSearch, SearchIssue, SearchIssueKind, SearchResult, SearchStatus
 from backend.app.models.schemas import (
     BaggageConfig,
     CabinClass,
@@ -24,6 +24,25 @@ from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.providers.pricing_engine import RealisticPricingProvider
 from backend.app.solver.optimizer import optimize_trip
+
+
+def test_optimizer_surfaces_incomplete_search_issues_for_any_provider(tmp_path: Path) -> None:
+    issue = SearchIssue(SearchIssueKind.TRUNCATED, "Some airport pairs were not searched.")
+
+    class PartialProvider(RealisticPricingProvider):
+        def search(self, query: LegSearch) -> SearchResult:
+            return SearchResult(options=super().search(query).options, status=SearchStatus.PARTIAL, issues=(issue,))
+
+    request = TripRequest(
+        origin_airports=["SFO"],
+        destination_airports=["SFO"],
+        earliest_departure=date(2026, 11, 10),
+        latest_return=date(2026, 11, 15),
+        stops=[CityStopSpec(id="london", label="London", airports=["LHR"], min_nights=3, max_nights=3)],
+    )
+    response = optimize_trip(request, PartialProvider(), FlightCache(tmp_path / "partial.db"))
+    assert response.recommended.legs
+    assert response.warnings.count(issue.message) == 1
 
 
 def test_partitioner_mixed_cabin_open_jaw_beats_single_ticket_and_all_one_ways(
@@ -235,50 +254,52 @@ def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_
     tmp_path: Path,
 ) -> None:
     class UnalignedCarrierProvider(FlightSearchProvider):
-        def search(self, query: LegSearch) -> list[FlightLegOption]:
+        def search(self, query: LegSearch) -> SearchResult:
             origin = query.origins[0]
             destination = query.destinations[0]
             departure_date = query.departure_date
             cabin = query.cabin
             airline = "EK" if (origin == "SFO" or destination == "SFO") else "GQ"
             airline_name = "Emirates" if airline == "EK" else "SKY express"
-            return [
-                FlightLegOption(
-                    leg_id=f"{origin}-{destination}-{departure_date.isoformat()}-{airline}",
-                    origin=origin,
-                    destination=destination,
-                    departure_date=departure_date,
-                    cabin=cabin,
-                    airline=airline,
-                    airline_name=airline_name,
-                    alliance="Non-Aligned",
-                    flight_numbers=[f"{airline}101"],
-                    segments=[
-                        FlightSegment(
-                            origin=origin,
-                            destination=destination,
-                            departure_date=departure_date,
-                            airline=airline,
-                            airline_name=airline_name,
-                            alliance="Non-Aligned",
-                            flight_number=f"{airline}101",
-                            duration_hours=2.0,
-                            cabin=cabin,
-                        )
-                    ],
-                    duration_hours=2.0,
-                    stops_count=0,
-                    one_way_base_fare_usd=1000.0 if airline == "EK" else 80.0,
-                    round_trip_half_fare_usd=650.0 if airline == "EK" else 80.0,
-                    bag_fee_per_checked_bag_usd=0.0,
-                    provider="fast_flights",
+            return SearchResult(
+                options=(
+                    FlightLegOption(
+                        leg_id=f"{origin}-{destination}-{departure_date.isoformat()}-{airline}",
+                        origin=origin,
+                        destination=destination,
+                        departure_date=departure_date,
+                        cabin=cabin,
+                        airline=airline,
+                        airline_name=airline_name,
+                        alliance="Non-Aligned",
+                        flight_numbers=[f"{airline}101"],
+                        segments=[
+                            FlightSegment(
+                                origin=origin,
+                                destination=destination,
+                                departure_date=departure_date,
+                                airline=airline,
+                                airline_name=airline_name,
+                                alliance="Non-Aligned",
+                                flight_number=f"{airline}101",
+                                duration_hours=2.0,
+                                cabin=cabin,
+                            )
+                        ],
+                        duration_hours=2.0,
+                        stops_count=0,
+                        one_way_base_fare_usd=1000.0 if airline == "EK" else 80.0,
+                        round_trip_half_fare_usd=650.0 if airline == "EK" else 80.0,
+                        bag_fee_per_checked_bag_usd=0.0,
+                        provider="fast_flights",
+                    ),
                 )
-            ]
+            )
 
     prov = UnalignedCarrierProvider()
-    leg_ek_out = prov.search(LegSearch.single("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS))[0]
-    leg_ek_ret = prov.search(LegSearch.single("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS))[0]
-    leg_gq_mid = prov.search(LegSearch.single("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY))[0]
+    leg_ek_out = prov.search(LegSearch.single("SFO", "ATH", date(2026, 12, 11), ConcreteCabinClass.BUSINESS)).options[0]
+    leg_ek_ret = prov.search(LegSearch.single("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS)).options[0]
+    leg_gq_mid = prov.search(LegSearch.single("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)).options[0]
 
     # Same unaligned carrier (EK + EK) gets combined Open-Jaw RT half-fare ($650 + $650 = $1300)
     assert prov.quote_multi_slice_ticket([leg_ek_out, leg_ek_ret], TicketType.OPEN_JAW) == 1300.0

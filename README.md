@@ -105,6 +105,8 @@ Use the **Provider Mode** dropdown in the top bar to control how flights are fet
 
 Live modes never fall back to simulated flights. Unavailable lookups or exhausted
 query limits produce fewer results or an error, not fake availability.
+Incomplete searches report warnings and are not saved as complete cached answers.
+This includes airport pairs skipped by the quota-saving shortlist.
 
 ### Test-Only Simulation
 Simulation is disabled by default, including for direct API requests. For a dedicated

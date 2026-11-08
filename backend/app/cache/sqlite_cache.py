@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from backend.app.data.airports import record_observed_duration
-from backend.app.models.queries import LegSearch
+from backend.app.models.queries import LegSearch, SearchResult, SearchStatus
 from backend.app.models.schemas import (
     CacheStats,
     FlightLegOption,
@@ -148,7 +148,7 @@ class FlightCache:
     def make_leg_key(query: LegSearch, provider_scope: str) -> str:
         origins = ",".join(query.origins)
         destinations = ",".join(query.destinations)
-        return f"search-v2:{provider_scope}:{origins}:{destinations}:{query.departure_date.isoformat()}:{query.cabin.value}"
+        return f"search-v3:{provider_scope}:{origins}:{destinations}:{query.departure_date.isoformat()}:{query.cabin.value}"
 
     def get_leg_options(self, query: LegSearch, *, provider_scope: str) -> list[FlightLegOption] | None:
         key = self.make_leg_key(query, provider_scope)
@@ -171,8 +171,13 @@ class FlightCache:
         self.session_misses += 1
         return None
 
-    def store_leg_options(self, query: LegSearch, options: list[FlightLegOption], *, provider_scope: str) -> None:
-        if not options or any(option.provider == "pricing_engine" for option in options):
+    def store_leg_options(self, query: LegSearch, result: SearchResult, *, provider_scope: str) -> None:
+        options = result.options
+        if (
+            result.status != SearchStatus.COMPLETE
+            or not options
+            or any(o.provider == "pricing_engine" for o in options)
+        ):
             return
         key = self.make_leg_key(query, provider_scope)
         now = time.time()

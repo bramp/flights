@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import os
 import time
@@ -13,13 +14,14 @@ import httpx
 from dotenv import load_dotenv
 from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query, get_flights
 from fast_flights.types import SeatType, TripType
+from primp import PrimpError
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.data.airports import (
     record_observed_duration,
     register_discovered_airport,
 )
-from backend.app.models.queries import LegSearch
+from backend.app.models.queries import LegSearch, SearchIssue, SearchIssueKind, SearchResult, SearchStatus
 from backend.app.models.schemas import (
     BaggageConfig,
     ConcreteCabinClass,
@@ -252,6 +254,14 @@ def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str,
     return fallback_code, "Non-Aligned", False, 45.0
 
 
+class _LiveQueryBudgetExceeded(Exception):
+    pass
+
+
+class _ProviderResponseError(Exception):
+    pass
+
+
 class CompositeFlightProvider(FlightSearchProvider):
     """Multi-mode flight provider supporting:
     - `fast_flights`: Free live Google Flights protobuf scraping with proactive rate-limiting.
@@ -279,8 +289,6 @@ class CompositeFlightProvider(FlightSearchProvider):
         )
         self.fallback = RealisticPricingProvider()
         self.api_calls_this_run = 0
-        self.cap_reached_warned = False
-        self.warnings: list[str] = []
         self._last_request_ts = 0.0
 
     def is_simulation(self) -> bool:
@@ -304,8 +312,6 @@ class CompositeFlightProvider(FlightSearchProvider):
         self.max_api_calls = max_api_calls
         self.max_layover_hours = (stops_policy or StopsPolicy()).max_layover_hours
         self.api_calls_this_run = 0
-        self.cap_reached_warned = False
-        self.warnings = []
         cache.active_provider = mode.value
         if mode == ProviderMode.OFFLINE and os.environ.get("FARESPLIT_TESTING") != "1":
             raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
@@ -320,17 +326,78 @@ class CompositeFlightProvider(FlightSearchProvider):
         self._last_request_ts = time.monotonic()
 
     def _can_make_live_call(self) -> bool:
-        if self.api_calls_this_run >= self.max_api_calls:
-            if not self.cap_reached_warned:
-                self.cap_reached_warned = True
-                self.warnings.append(
-                    f"Reached per-run live API limit ({self.max_api_calls} queries). "
-                    "Remaining uncached legs were skipped; run Optimize again to fetch more live legs."
-                )
-            return False
-        return True
+        return self.api_calls_this_run < self.max_api_calls
 
-    def search(self, query: LegSearch) -> list[FlightLegOption]:
+    def _budget_issue(self) -> SearchIssue:
+        return SearchIssue(
+            SearchIssueKind.BUDGET_EXHAUSTED,
+            f"Reached per-run live API limit ({self.max_api_calls} queries). "
+            "Some searches were incomplete; run Optimize again to fetch more live legs.",
+        )
+
+    def _attempt(self, query: LegSearch, backend: Literal["fast_flights", "serpapi"]) -> SearchResult:
+        if not self._can_make_live_call():
+            return SearchResult(status=SearchStatus.FAILED, issues=(self._budget_issue(),))
+
+        origins = ",".join(query.origins)
+        destinations = ",".join(query.destinations)
+        try:
+            if backend == "fast_flights":
+                options = self._search_fast_flights(origins, destinations, query.departure_date, query.cabin)
+            else:
+                options = self._search_serpapi_google_flights(origins, destinations, query.departure_date, query.cabin)
+        except _LiveQueryBudgetExceeded:
+            return SearchResult(status=SearchStatus.PARTIAL, issues=(self._budget_issue(),))
+        except (PrimpError, httpx.HTTPError, FlightsNotFound, json.JSONDecodeError, _ProviderResponseError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError):
+                detail = f"HTTP {exc.response.status_code}"
+            elif isinstance(exc, _ProviderResponseError):
+                detail = str(exc)
+            else:
+                detail = type(exc).__name__
+            label = "fast-flights" if backend == "fast_flights" else "SerpApi"
+            issue = SearchIssue(
+                SearchIssueKind.PROVIDER_ERROR,
+                f"{label} query ({origins}→{destinations} on {query.departure_date}) failed: {detail}.",
+            )
+            return SearchResult(status=SearchStatus.FAILED, issues=(issue,))
+        return SearchResult(options=tuple(options))
+
+    @staticmethod
+    def _has_budget_issue(result: SearchResult) -> bool:
+        return any(issue.kind == SearchIssueKind.BUDGET_EXHAUSTED for issue in result.issues)
+
+    @staticmethod
+    def _combine_pairs(
+        query: LegSearch,
+        pair_results: list[SearchResult],
+        pair_count: int,
+        batch_result: SearchResult | None = None,
+    ) -> SearchResult:
+        options = tuple(option for result in pair_results for option in result.options)
+        issues = [issue for result in pair_results for issue in result.issues]
+        if batch_result is not None:
+            issues = [*batch_result.issues, *issues]
+        skipped = pair_count - len(pair_results)
+        if skipped and not any(issue.kind == SearchIssueKind.BUDGET_EXHAUSTED for issue in issues):
+            issues.append(
+                SearchIssue(
+                    SearchIssueKind.TRUNCATED,
+                    f"Search ({','.join(query.origins)}→{','.join(query.destinations)} on {query.departure_date}) "
+                    f"covered {len(pair_results)} of {pair_count} airport pairs; other pairs were not searched.",
+                )
+            )
+        if not skipped and all(result.status == SearchStatus.COMPLETE for result in pair_results):
+            status = SearchStatus.COMPLETE
+        elif any(result.status != SearchStatus.FAILED for result in pair_results) or (
+            batch_result is not None and batch_result.status != SearchStatus.FAILED
+        ):
+            status = SearchStatus.PARTIAL
+        else:
+            status = SearchStatus.FAILED
+        return SearchResult(options=options, status=status, issues=tuple(issues))
+
+    def search(self, query: LegSearch) -> SearchResult:
         """Batch multiple origins and destinations into a single query when using SerpApi,
         or query primary airport pairs when using fast-flights to conserve requests.
         """
@@ -340,7 +407,7 @@ class CompositeFlightProvider(FlightSearchProvider):
         cabin = query.cabin
         pairs = [(orig, dest) for orig in origins for dest in destinations if orig != dest]
         if not pairs:
-            return []
+            return SearchResult()
 
         if self.mode == ProviderMode.OFFLINE:
             if os.environ.get("FARESPLIT_TESTING") != "1":
@@ -349,69 +416,61 @@ class CompositeFlightProvider(FlightSearchProvider):
 
         if self.mode == ProviderMode.SERPAPI:
             if not self.serpapi_key:
-                self.warnings.append("SERPAPI mode selected, but SERPAPI_KEY is not set in .env or environment.")
-                return []
-            if not self._can_make_live_call():
-                return []
-            try:
-                orig_csv = ",".join(origins)
-                dest_csv = ",".join(destinations)
-                live = self._search_serpapi_google_flights(orig_csv, dest_csv, departure_date, cabin)
-                if live:
-                    return live
-            except Exception as exc:  # noqa: BLE001
-                self.warnings.append(f"SerpApi query ({origins[0]}→{destinations[0]}) failed: {exc}")
-
-            if len(origins) == len(destinations) == 1:
-                return []
-            return [option for orig, dest in pairs for option in self._search_pair(orig, dest, departure_date, cabin)]
+                issue = SearchIssue(
+                    SearchIssueKind.MISSING_CREDENTIALS,
+                    "SERPAPI mode selected, but SERPAPI_KEY is not set in .env or environment.",
+                )
+                return SearchResult(status=SearchStatus.FAILED, issues=(issue,))
+            batch = self._attempt(query, "serpapi")
+            if batch.options or len(origins) == len(destinations) == 1 or self._has_budget_issue(batch):
+                return batch
+            pair_results: list[SearchResult] = []
+            for orig, dest in pairs:
+                result = self._search_pair(LegSearch.single(orig, dest, departure_date, cabin))
+                pair_results.append(result)
+                if self._has_budget_issue(result):
+                    break
+            return self._combine_pairs(query, pair_results, len(pairs), batch)
 
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
-            results: list[FlightLegOption] = []
             primary_pairs = [(o, d) for o in origins[:2] for d in destinations[:2] if o != d]
+            pair_results = []
+            option_count = 0
             for orig, dest in primary_pairs:
-                results.extend(self._search_pair(orig, dest, departure_date, cabin))
-                if len(results) >= 4:
+                result = self._search_pair(LegSearch.single(orig, dest, departure_date, cabin))
+                pair_results.append(result)
+                option_count += len(result.options)
+                if option_count >= 4 or self._has_budget_issue(result):
                     break
-            if results:
-                return results
+            if not option_count and not any(self._has_budget_issue(result) for result in pair_results):
+                for orig, dest in pairs:
+                    if (orig, dest) in primary_pairs:
+                        continue
+                    result = self._search_pair(LegSearch.single(orig, dest, departure_date, cabin))
+                    pair_results.append(result)
+                    if self._has_budget_issue(result):
+                        break
+            return self._combine_pairs(query, pair_results, len(pairs))
 
-            return [
-                option
-                for orig, dest in pairs
-                if (orig, dest) not in primary_pairs
-                for option in self._search_pair(orig, dest, departure_date, cabin)
-            ]
+        raise ValueError(f"Unsupported flight provider mode: {self.mode}")
 
-        return []
+    def _search_pair(self, query: LegSearch) -> SearchResult:
+        fast: SearchResult | None = None
+        if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
+            fast = self._attempt(query, "fast_flights")
+            if fast.options or self.mode == ProviderMode.FAST_FLIGHTS or self._has_budget_issue(fast):
+                return fast
+            if not self.serpapi_key:
+                return fast
 
-    def _search_pair(
-        self,
-        origin: str,
-        destination: str,
-        departure_date: date,
-        cabin: ConcreteCabinClass,
-    ) -> list[FlightLegOption]:
-        if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO) and self._can_make_live_call():
-            try:
-                ff_results = self._search_fast_flights(origin, destination, departure_date, cabin)
-                if ff_results:
-                    return ff_results
-            except Exception as exc:  # noqa: BLE001
-                if self.mode == ProviderMode.FAST_FLIGHTS:
-                    self.warnings.append(
-                        f"fast-flights query ({origin}→{destination} on {departure_date}) failed: {exc}"
-                    )
-
-        if self.mode in (ProviderMode.SERPAPI, ProviderMode.AUTO) and self.serpapi_key and self._can_make_live_call():
-            try:
-                serp_results = self._search_serpapi_google_flights(origin, destination, departure_date, cabin)
-                if serp_results:
-                    return serp_results
-            except Exception as exc:  # noqa: BLE001
-                self.warnings.append(f"SerpApi query ({origin}→{destination} on {departure_date}) failed: {exc}")
-
-        return []
+        serp = self._attempt(query, "serpapi")
+        if fast is None:
+            return serp
+        issues = (*fast.issues, *serp.issues)
+        if serp.status == SearchStatus.COMPLETE:
+            return SearchResult(options=serp.options, issues=issues)
+        status = SearchStatus.PARTIAL if fast.status != SearchStatus.FAILED else serp.status
+        return SearchResult(options=serp.options, status=status, issues=issues)
 
     def _search_fast_flights(
         self,
@@ -447,21 +506,17 @@ class CompositeFlightProvider(FlightSearchProvider):
         default_cap_hours = StopsPolicy().max_layover_hours
         effective_hours = max(self.max_layover_hours, default_cap_hours)
         layover_mins = round(effective_hours * 60.0) if effective_hours > 0 else None
-        try:
-            result_list: list[Any] = get_flights(_build_query(layover_mins))
-        except FlightsNotFound:
-            result_list = []
+        result_list: list[Any] = get_flights(_build_query(layover_mins))
 
         # If strict layover cap yielded no flights on this corridor, retry without the layover cap
-        if not result_list and layover_mins is not None and self._can_make_live_call():
+        if not result_list and layover_mins is not None:
+            if not self._can_make_live_call():
+                raise _LiveQueryBudgetExceeded
             self._throttle(default_delay=1.0)
             self.api_calls_this_run += 1
             if self.cache is not None:
                 self.cache.record_provider_call("fast_flights")
-            try:
-                result_list = get_flights(_build_query(None))
-            except FlightsNotFound:
-                result_list = []
+            result_list = get_flights(_build_query(None))
 
         return self.parse_fast_flights_results(
             results=result_list,
@@ -684,6 +739,11 @@ class CompositeFlightProvider(FlightSearchProvider):
             resp = client.get("https://serpapi.com/search.json", params=params)
             resp.raise_for_status()
             data = resp.json()
+
+        if not isinstance(data, dict):
+            raise _ProviderResponseError("invalid response")
+        if data.get("error"):
+            raise _ProviderResponseError("provider returned an error response")
 
         return self.parse_google_flights_payload(
             data=data,
