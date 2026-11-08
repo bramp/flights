@@ -14,6 +14,9 @@ npm ci
 npx playwright install chromium
 ```
 
+The development dependencies include `httpx2` for Starlette's test client and
+the pytest-playwright `base-url` extra for its supported URL fixture.
+
 ### 2. Run the Application Server
 ```bash
 uv run uvicorn backend.app.main:app --reload --port 8000
