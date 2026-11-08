@@ -23,6 +23,14 @@ uv run uvicorn backend.app.main:app --reload --port 8000
 ```
 Then open **http://127.0.0.1:8000** in your browser.
 
+If you run without `--reload`, restart the server after Python changes. Static
+frontend files can update while the running backend still has the old API.
+Dependency updates require a restart even when `--reload` is enabled.
+Optimization responses carry an `api_version`; the frontend rejects mismatched
+versions with restart instructions instead of rendering incompatible results.
+Keep the response version and frontend version check aligned when changing this
+contract.
+
 ### 3. Run Formatting, Linting & Tests
 ```bash
 uv run ruff format .

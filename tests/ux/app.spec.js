@@ -99,6 +99,7 @@ function optimizationResponse(provider = "mock") {
     }],
   };
   return {
+    api_version: 2,
     recommended,
     strategy_comparison: [recommended, alternative],
     pareto_frontier: [recommended, alternative],
@@ -167,6 +168,42 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
   );
   await expect(page.getByText("Optimization Error", { exact: true })).toHaveCount(0);
 });
+
+for (const transport of ["json", "ndjson"]) {
+  test(`an outdated server response (${transport}) explains how to recover`, async ({ page }) => {
+    const legacyResponse = optimizationResponse();
+    delete legacyResponse.api_version;
+    for (const itinerary of new Set([
+      legacyResponse.recommended,
+      ...legacyResponse.strategy_comparison,
+      ...legacyResponse.pareto_frontier,
+    ])) {
+      for (const ticket of itinerary.tickets) {
+        ticket.base_fare_usd = ticket.fare_estimate.amount_usd;
+        delete ticket.fare_estimate;
+      }
+    }
+    await page.route("**/api/optimize", (route) => route.fulfill({
+      contentType: transport === "json" ? "application/json" : "application/x-ndjson",
+      body: transport === "json"
+        ? JSON.stringify(legacyResponse)
+        : JSON.stringify({ type: "result", data: legacyResponse }) + "\n",
+    }));
+
+    await page.locator("#optimizeBtn").click();
+    await expect(page.locator("#resultsContainer")).toContainText(
+      "Restart the FareSplit server and reload this page."
+    );
+    await expect(page.locator("#resultsContainer")).not.toContainText("Cannot read properties");
+    await expect(page.locator(".ticket-card")).toHaveCount(0);
+    await expect(page.locator("#optimizeBtn")).toBeEnabled();
+
+    await page.unroute("**/api/optimize");
+    await page.locator("#optimizeBtn").click();
+    await expect(page.locator(".ticket-card")).toHaveCount(1);
+    await expect(page.getByText("Optimization Error", { exact: true })).toHaveCount(0);
+  });
+}
 
 test("Optimize submits edited inputs, shows loading and clears stale results", async ({ page }) => {
   await page.locator("#providerModeSelect").selectOption("fast_flights");

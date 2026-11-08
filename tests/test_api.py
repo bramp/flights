@@ -125,6 +125,7 @@ def test_simulation_is_testing_only_and_never_cached(
     r1 = client.post("/api/optimize", json=payload)
     assert r1.status_code == 200
     body1 = r1.json()
+    assert body1["api_version"] == 2
     assert body1["recommended"]["total_price_usd"] > 0
     assert len(body1["strategy_comparison"]) >= 4
     assert body1["cache_stats"]["total_cached_flights_in_db"] == 0
@@ -239,4 +240,5 @@ def test_optimize_streams_progress_events_and_final_result(client: TestClient, m
     assert progress_events[-1]["queries_completed"] == progress_events[-1]["queries_total"]
 
     assert len(result_events) == 1
+    assert result_events[0]["data"]["api_version"] == 2
     assert result_events[0]["data"]["recommended"]["total_price_usd"] > 0

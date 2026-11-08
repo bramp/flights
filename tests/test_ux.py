@@ -91,11 +91,14 @@ def test_ux_end_to_end_optimization_and_interactions(page: Page, live_server_url
     expect(page.locator("#resultsContainer")).not_to_contain_text("Optimization Error")
     assert page_errors == []
 
-    # 4. Click another strategy row in the comparison table and verify it becomes active
-    second_row = strategy_rows.nth(1)
-    second_strategy_name = second_row.locator("strong").first.inner_text()
-    second_row.click()
-    expect(page.locator(".itinerary-hero h2")).to_have_text(second_strategy_name)
+    for index in range(strategy_rows.count()):
+        row = strategy_rows.nth(index)
+        strategy_name = row.locator("strong").first.inner_text()
+        row.click()
+        expect(page.locator(".itinerary-hero h2")).to_have_text(strategy_name)
+        expect(page.locator(".ticket-card").first).to_be_visible()
+        expect(page.locator("#resultsContainer")).not_to_contain_text("Optimization Error")
+        assert page_errors == []
 
     # 5. Click a between-row cabin pill (e.g. set Flight 1 to Economy) -> should mark results stale
     first_connector = page.locator(".flight-connector-row").first

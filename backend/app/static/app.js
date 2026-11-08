@@ -10,6 +10,7 @@
 
 const COOKIE_NAME = "faresplit_trip_state_v1";
 const STORAGE_KEY = "faresplit_trip_state_v1";
+const OPTIMIZATION_API_VERSION = 2;
 
 const DEFAULT_STOPS_POLICY = {
   short_haul_stops: "nonstop",
@@ -1968,6 +1969,11 @@ async function runOptimization() {
 
     if (!data) {
       throw new Error("Optimization completed without returning results.");
+    }
+    if (data.api_version !== OPTIMIZATION_API_VERSION) {
+      throw new Error(
+        "The app and server use different API versions. Restart the FareSplit server and reload this page."
+      );
     }
 
     currentOptimizationResponse = data;

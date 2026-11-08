@@ -418,6 +418,7 @@ class CacheStats(BaseModel):
 
 
 class OptimizationResponse(BaseModel):
+    api_version: Literal[2] = 2
     recommended: EvaluatedItinerary
     pareto_frontier: list[EvaluatedItinerary]
     strategy_comparison: list[EvaluatedItinerary]
