@@ -24,6 +24,7 @@ from backend.app.data.airports import (
     suggest_airports,
 )
 from backend.app.models.schemas import CacheStats, OptimizationResponse, ProviderMode, TripRequest
+from backend.app.providers.base import ProgressEvent
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.solver.optimizer import optimize_trip
 
@@ -125,10 +126,10 @@ def _stream_optimization_events(request: TripRequest, services: AppServices) -> 
     event_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
     cancelled = threading.Event()
 
-    def on_progress(event: dict[str, object]) -> None:
+    def on_progress(event: ProgressEvent) -> None:
         if cancelled.is_set():
             raise InterruptedError("Client disconnected")
-        event_queue.put({"type": "progress", **event})
+        event_queue.put({"type": "progress", **event.to_payload()})
 
     def worker() -> None:
         try:

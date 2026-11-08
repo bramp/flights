@@ -303,6 +303,7 @@ def test_optimize_streams_progress_events_and_final_result(client: TestClient, m
     assert len(progress_events) >= 4
     assert any(e["phase"] == "query_start" and "→" in e["current_query"] for e in progress_events)
     assert any(e["phase"] == "query_done" and e.get("last_query") for e in progress_events)
+    assert "last_query" not in next(e for e in progress_events if e["phase"] == "query_start")
     assert progress_events[-1]["phase"] == "complete"
     assert progress_events[-1]["progress_pct"] == 100
     assert progress_events[-1]["queries_completed"] == progress_events[-1]["queries_total"]

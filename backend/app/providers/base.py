@@ -4,12 +4,85 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Literal
 
 from backend.app.cache.sqlite_cache import FlightCache
-from backend.app.models.queries import LegSearch, SearchIssue, SearchResult
+from backend.app.models.queries import LegSearch, SearchIssue, SearchResult, SearchStatus
 
-ProgressCallback = Callable[[dict[str, Any]], None]
+ProgressPhase = Literal["init", "query_start", "query_done", "strategy", "complete"]
+ProgressSource = Literal["simulated", "cache", "live"]
+
+
+@dataclass(frozen=True)
+class QueryProgress:
+    """Describe the most recently completed flight-leg query."""
+
+    query: str
+    route: str
+    date: str
+    cabin: str
+    options_count: int
+    status: SearchStatus
+    source: ProgressSource
+
+    def to_payload(self) -> dict[str, object]:
+        """Return the JSON-compatible query details."""
+        return {
+            "query": self.query,
+            "route": self.route,
+            "date": self.date,
+            "cabin": self.cabin,
+            "options_count": self.options_count,
+            "status": self.status.value,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Represent one immutable optimization progress snapshot."""
+
+    phase: ProgressPhase
+    current_query: str
+    queries_completed: int
+    queries_total: int
+    schedule_index: int
+    schedules_total: int
+    schedule_route: str
+    strategy_label: str
+    strategies_completed: int
+    strategies_total: int
+    cache_hits: int
+    cache_misses: int
+    live_calls: int
+    progress_pct: int
+    last_query: QueryProgress | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        """Return the JSON-compatible event, omitting absent optional details."""
+        payload: dict[str, object] = {
+            "phase": self.phase,
+            "current_query": self.current_query,
+            "queries_completed": self.queries_completed,
+            "queries_total": self.queries_total,
+            "schedule_index": self.schedule_index,
+            "schedules_total": self.schedules_total,
+            "schedule_route": self.schedule_route,
+            "strategy_label": self.strategy_label,
+            "strategies_completed": self.strategies_completed,
+            "strategies_total": self.strategies_total,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "live_calls": self.live_calls,
+            "progress_pct": self.progress_pct,
+        }
+        if self.last_query is not None:
+            payload["last_query"] = self.last_query.to_payload()
+        return payload
+
+
+ProgressCallback = Callable[[ProgressEvent], None]
 
 
 class FlightSearchProvider(ABC):
@@ -71,9 +144,9 @@ class CachedFlightProvider(FlightSearchProvider):
 
     def emit_progress(
         self,
-        phase: str,
+        phase: ProgressPhase,
         current_query: str,
-        last_query: dict[str, Any] | None = None,
+        last_query: QueryProgress | None = None,
         progress_pct: int | None = None,
     ) -> None:
         if self.progress_callback is None:
@@ -81,25 +154,25 @@ class CachedFlightProvider(FlightSearchProvider):
         total_q = max(len(self.planned_queries), len(self.completed_queries), 1)
         done_q = len(self.completed_queries)
         live_calls = self.cache.session_fast_flights_calls + self.cache.session_serpapi_calls
-        payload: dict[str, Any] = {
-            "phase": phase,
-            "current_query": current_query,
-            "queries_completed": done_q,
-            "queries_total": total_q,
-            "schedule_index": self.schedule_index,
-            "schedules_total": self.schedules_total,
-            "schedule_route": self.current_schedule_route,
-            "strategy_label": self.current_strategy_label,
-            "strategies_completed": self.strategies_completed,
-            "strategies_total": self.strategies_total,
-            "cache_hits": self.cache.session_hits,
-            "cache_misses": self.cache.session_misses,
-            "live_calls": live_calls,
-            "progress_pct": progress_pct if progress_pct is not None else self.compute_progress_pct(),
-        }
-        if last_query is not None:
-            payload["last_query"] = last_query
-        self.progress_callback(payload)
+        self.progress_callback(
+            ProgressEvent(
+                phase=phase,
+                current_query=current_query,
+                queries_completed=done_q,
+                queries_total=total_q,
+                schedule_index=self.schedule_index,
+                schedules_total=self.schedules_total,
+                schedule_route=self.current_schedule_route,
+                strategy_label=self.current_strategy_label,
+                strategies_completed=self.strategies_completed,
+                strategies_total=self.strategies_total,
+                cache_hits=self.cache.session_hits,
+                cache_misses=self.cache.session_misses,
+                live_calls=live_calls,
+                progress_pct=progress_pct if progress_pct is not None else self.compute_progress_pct(),
+                last_query=last_query,
+            )
+        )
 
     def search(self, query: LegSearch) -> SearchResult:
         if query in self._run_results:
@@ -127,7 +200,7 @@ class CachedFlightProvider(FlightSearchProvider):
         self._run_results[query] = results
         self.search_issues.extend(results.issues)
         self.completed_queries.add(query)
-        source = (
+        source: ProgressSource = (
             "simulated"
             if self.delegate.is_simulation()
             else ("cache" if self.cache.session_hits > hits_before else "live")
@@ -135,14 +208,14 @@ class CachedFlightProvider(FlightSearchProvider):
         self.emit_progress(
             phase="query_done",
             current_query=query_label,
-            last_query={
-                "query": query_label,
-                "route": f"{', '.join(query.origins)} → {', '.join(query.destinations)}",
-                "date": query.departure_date.isoformat(),
-                "cabin": query.cabin.value.replace("_", " ").title(),
-                "options_count": len(results.options),
-                "status": results.status.value,
-                "source": source,
-            },
+            last_query=QueryProgress(
+                query=query_label,
+                route=f"{', '.join(query.origins)} → {', '.join(query.destinations)}",
+                date=query.departure_date.isoformat(),
+                cabin=query.cabin.value.replace("_", " ").title(),
+                options_count=len(results.options),
+                status=results.status,
+                source=source,
+            ),
         )
         return results
