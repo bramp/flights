@@ -251,15 +251,17 @@ def test_auto_fallback_can_complete_a_failed_primary_search(tmp_path: Path, monk
     assert attempts == ["fast", "serp"]
 
 
-def test_fast_flights_retry_budget_is_reported_as_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fast_flights_retry_budget_is_reported_as_partial(
+    monkeypatch: pytest.MonkeyPatch, fast_flights_html: Callable[[object], str]
+) -> None:
     provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, max_api_calls=1, rate_limit_seconds=0)
     calls: list[object] = []
 
-    def no_flights(query: object) -> list[object]:
+    def no_flights(query: object) -> str:
         calls.append(query)
-        return []
+        return fast_flights_html([None])
 
-    monkeypatch.setattr("backend.app.providers.google_flights.get_flights", no_flights)
+    monkeypatch.setattr("backend.app.providers.google_flights.fetch_flights_html", no_flights)
     query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
     result = provider.search(query)
     assert result.status == SearchStatus.PARTIAL
@@ -299,7 +301,7 @@ def test_malformed_fast_flights_response_is_a_provider_failure(
         serp_calls.append("serpapi")
         return [recovered]
 
-    monkeypatch.setattr("fast_flights.fetcher.fetch_flights_html", malformed_response)
+    monkeypatch.setattr("backend.app.providers.google_flights.fetch_flights_html", malformed_response)
     monkeypatch.setattr(provider, "_search_serpapi_google_flights", recover)
     result = CachedFlightProvider(provider, cache).search(query)
     assert len(fast_calls) == cache.get_stats().fast_flights_calls_this_run == (2 if empty_first_attempt else 1)
@@ -357,13 +359,14 @@ def test_fast_flights_adapter_errors_still_propagate(
 ) -> None:
     provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, rate_limit_seconds=0)
 
-    def fetched(_query: object) -> list[object]:
-        return [object()]
+    def fetched(_query: object) -> str:
+        return "<html></html>"
 
     def broken(**_kwargs: object) -> list[FlightLegOption]:
         raise error_type("adapter implementation error")
 
-    monkeypatch.setattr("backend.app.providers.google_flights.get_flights", fetched)
+    monkeypatch.setattr("backend.app.providers.google_flights.fetch_flights_html", fetched)
+    monkeypatch.setattr("backend.app.providers.google_flights.parse_fast_flights_html", lambda _html: [object()])
     monkeypatch.setattr(provider, "parse_fast_flights_results", broken)
     with pytest.raises(error_type, match="adapter implementation error"):
         provider.search(LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS))

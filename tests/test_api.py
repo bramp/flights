@@ -190,17 +190,18 @@ def test_optimize_rejects_degenerate_same_airport_stop(client: TestClient) -> No
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("fallback_available", [False, True])
-def test_repeated_optimization_handles_changing_malformed_provider_responses(
+def test_repeated_optimization_handles_unpriced_and_missing_result_groups(
     client: TestClient,
     flight_provider: CompositeFlightProvider,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     fast_flights_html: Callable[[object], str],
+    fast_flights_unpriced_html: str,
     stream: bool,
     fallback_available: bool,
 ) -> None:
     monkeypatch.setenv("SERPAPI_KEY", "test-key" if fallback_available else "")
-    current_html = fast_flights_html([[[[], [[]]]]])
+    current_html = fast_flights_unpriced_html
     fetched: list[str] = []
 
     def fetch(*_args: object, **_kwargs: object) -> str:
@@ -211,7 +212,7 @@ def test_repeated_optimization_handles_changing_malformed_provider_responses(
         options = RealisticPricingProvider().search(LegSearch.single(origin, destination, departure, cabin)).options
         return [option.model_copy(update={"provider": "serpapi"}) for option in options]
 
-    monkeypatch.setattr("fast_flights.fetcher.fetch_flights_html", fetch)
+    monkeypatch.setattr("backend.app.providers.google_flights.fetch_flights_html", fetch)
     monkeypatch.setattr(flight_provider, "_search_serpapi_google_flights", recover)
     # Successful fallback results are cached; failed searches must retry without force refresh.
     payload = {
@@ -246,6 +247,7 @@ def test_repeated_optimization_handles_changing_malformed_provider_responses(
             assert "No valid flight combinations" in body["detail"]
             assert "An internal error" not in body["detail"]
         assert len(fetched) > previous_calls
+        assert "unable to parse response" not in response.text
     assert "Unexpected error during streaming optimization" not in caplog.text
 
 

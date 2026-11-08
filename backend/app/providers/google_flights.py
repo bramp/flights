@@ -12,7 +12,8 @@ from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query, get_flights
+from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query, fetch_flights_html
+from fast_flights.parser import parse as parse_fast_flights_html
 from fast_flights.types import SeatType, TripType
 from primp import PrimpError
 
@@ -33,6 +34,7 @@ from backend.app.models.schemas import (
 )
 from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.pricing_engine import CARRIERS, RealisticPricingProvider
+from backend.app.providers.provider_recordings import record_provider_response
 
 load_dotenv()
 
@@ -502,11 +504,45 @@ class CompositeFlightProvider(FlightSearchProvider):
                 language="en",
                 hide_separate_and_self_transfer=True,
             )
-            # fast-flights exposes malformed-response errors without wrapping them.
+            html = fetch_flights_html(query)
             try:
-                return get_flights(query)
+                results = parse_fast_flights_html(html)
+            except FlightsNotFound:
+                record_provider_response(
+                    "fast_flights",
+                    {
+                        "origin": origin.upper(),
+                        "destination": destination.upper(),
+                        "departure_date": departure_date.isoformat(),
+                        "cabin": cabin.value,
+                    },
+                    html,
+                )
+                raise
             except (IndexError, TypeError, AttributeError, KeyError, ValueError) as exc:
+                record_provider_response(
+                    "fast_flights",
+                    {
+                        "origin": origin.upper(),
+                        "destination": destination.upper(),
+                        "departure_date": departure_date.isoformat(),
+                        "cabin": cabin.value,
+                    },
+                    html,
+                    parse_error=exc,
+                )
                 raise _ProviderResponseError(f"unable to parse response ({type(exc).__name__})") from exc
+            record_provider_response(
+                "fast_flights",
+                {
+                    "origin": origin.upper(),
+                    "destination": destination.upper(),
+                    "departure_date": departure_date.isoformat(),
+                    "cabin": cabin.value,
+                },
+                html,
+            )
+            return results
 
         default_cap_hours = StopsPolicy().max_layover_hours
         effective_hours = max(self.max_layover_hours, default_cap_hours)
@@ -743,20 +779,50 @@ class CompositeFlightProvider(FlightSearchProvider):
         with httpx.Client(timeout=15.0) as client:
             resp = client.get("https://serpapi.com/search.json", params=params)
             resp.raise_for_status()
-            data = resp.json()
+            body = resp.text
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            record_provider_response(
+                "serpapi",
+                {
+                    "origin": origin.upper(),
+                    "destination": destination.upper(),
+                    "departure_date": departure_date.isoformat(),
+                    "cabin": cabin.value,
+                },
+                body,
+                parse_error=exc,
+            )
+            raise
+
+        query = {
+            "origin": origin.upper(),
+            "destination": destination.upper(),
+            "departure_date": departure_date.isoformat(),
+            "cabin": cabin.value,
+        }
 
         if not isinstance(data, dict):
+            record_provider_response("serpapi", query, body, parse_error=ValueError("expected JSON object"))
             raise _ProviderResponseError("invalid response")
         if data.get("error"):
+            record_provider_response("serpapi", query, body)
             raise _ProviderResponseError("provider returned an error response")
 
-        return self.parse_google_flights_payload(
-            data=data,
-            origin=origin.upper(),
-            destination=destination.upper(),
-            departure_date=departure_date,
-            cabin=cabin,
-        )
+        try:
+            options = self.parse_google_flights_payload(
+                data=data,
+                origin=origin.upper(),
+                destination=destination.upper(),
+                departure_date=departure_date,
+                cabin=cabin,
+            )
+        except (IndexError, TypeError, AttributeError, KeyError, ValueError) as exc:
+            record_provider_response("serpapi", query, body, parse_error=exc)
+            raise
+        record_provider_response("serpapi", query, body)
+        return options
 
     @staticmethod
     def parse_google_flights_payload(

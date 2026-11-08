@@ -43,3 +43,16 @@ def fast_flights_html() -> Callable[[object], str]:
         return _response_html(_flight_payload(results))
 
     return render
+
+
+@pytest.fixture
+def fast_flights_unpriced_html(fast_flights_html: Callable[[object], str]) -> str:
+    segment: list[object] = [None] * 22
+    segment[3:7] = ["SFO", "San Francisco", "London", "LHR"]
+    segment[8], segment[10] = [9], [11]
+    segment[11], segment[17] = 120, "Test aircraft"
+    segment[20] = segment[21] = [2026, 12, 11]
+    flight: list[object] = [None] * 23
+    flight[0:3] = ["nonstop", ["Test Airline"], [segment]]
+    flight[22] = [None] * 7 + [100000, 120000]
+    return fast_flights_html([[[flight, []]]])

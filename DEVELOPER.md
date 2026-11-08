@@ -62,6 +62,13 @@ retries, fallback, and repeated JSON/streaming optimization requests. The
 fast-flights dependency is pinned to the upstream parser fix for those response
 shapes. External fetches are mocked; these tests consume no quota.
 
+The server saves compressed raw provider responses after parser failures under
+`data/cache/provider-responses/`. To record successful responses too, set
+`FARESPLIT_RECORD_PROVIDER_RESPONSES=1` in `.env` and restart the server. These
+local recordings are gitignored and contain the provider response and search
+details, but not request credentials. Replay the saved responses without network
+access with `uv run python -m backend.app.providers.provider_recordings`.
+
 Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine,
 install the browser and OS dependencies with `npx playwright install --with-deps chromium`
 after `npm ci`.
