@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
 import httpx
 import pytest
+from fast_flights.parser import parse as parse_fast_flights
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.models.queries import LegSearch, SearchIssue, SearchIssueKind, SearchResult, SearchStatus
@@ -268,9 +270,17 @@ def test_fast_flights_retry_budget_is_reported_as_partial(monkeypatch: pytest.Mo
 
 @pytest.mark.parametrize("mode", [ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO])
 @pytest.mark.parametrize("empty_first_attempt", [False, True])
-def test_fast_flights_parser_index_error_is_a_provider_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: ProviderMode, empty_first_attempt: bool
+def test_malformed_fast_flights_response_is_a_provider_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: ProviderMode,
+    empty_first_attempt: bool,
+    malformed_fast_flights_response: tuple[str, type[Exception]],
+    fast_flights_html: Callable[[object], str],
 ) -> None:
+    html, error_type = malformed_fast_flights_response
+    with pytest.raises(error_type):
+        parse_fast_flights(html)
     cache = FlightCache(tmp_path / "parser-error.db")
     provider = CompositeFlightProvider(cache=cache, mode=mode, rate_limit_seconds=0)
     provider.serpapi_key = "test-key"
@@ -279,22 +289,22 @@ def test_fast_flights_parser_index_error_is_a_provider_failure(
     fast_calls: list[object] = []
     serp_calls: list[str] = []
 
-    def malformed_response(query: object) -> list[object]:
+    def malformed_response(query: object, **_kwargs: object) -> str:
         fast_calls.append(query)
         if empty_first_attempt and len(fast_calls) == 1:
-            return []
-        raise IndexError("list index out of range")
+            return fast_flights_html([None])
+        return html
 
     def recover(*_args: object) -> list[FlightLegOption]:
         serp_calls.append("serpapi")
         return [recovered]
 
-    monkeypatch.setattr("backend.app.providers.google_flights.get_flights", malformed_response)
+    monkeypatch.setattr("fast_flights.fetcher.fetch_flights_html", malformed_response)
     monkeypatch.setattr(provider, "_search_serpapi_google_flights", recover)
     result = CachedFlightProvider(provider, cache).search(query)
     assert len(fast_calls) == cache.get_stats().fast_flights_calls_this_run == (2 if empty_first_attempt else 1)
     assert result.issues[0].kind == SearchIssueKind.PROVIDER_ERROR
-    assert "unable to parse response (IndexError)" in result.issues[0].message
+    assert f"unable to parse response ({error_type.__name__})" in result.issues[0].message
     if mode == ProviderMode.AUTO:
         assert result.status == SearchStatus.COMPLETE
         assert result.options == (recovered,)
@@ -307,18 +317,21 @@ def test_fast_flights_parser_index_error_is_a_provider_failure(
         assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is None
 
 
-def test_fast_flights_adapter_index_error_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("error_type", [IndexError, TypeError, AttributeError, KeyError, ValueError])
+def test_fast_flights_adapter_errors_still_propagate(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
     provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, rate_limit_seconds=0)
 
     def fetched(_query: object) -> list[object]:
         return [object()]
 
     def broken(**_kwargs: object) -> list[FlightLegOption]:
-        raise IndexError("adapter implementation error")
+        raise error_type("adapter implementation error")
 
     monkeypatch.setattr("backend.app.providers.google_flights.get_flights", fetched)
     monkeypatch.setattr(provider, "parse_fast_flights_results", broken)
-    with pytest.raises(IndexError, match="adapter implementation error"):
+    with pytest.raises(error_type, match="adapter implementation error"):
         provider.search(LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.BUSINESS))
 
 

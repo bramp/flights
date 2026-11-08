@@ -502,10 +502,11 @@ class CompositeFlightProvider(FlightSearchProvider):
                 language="en",
                 hide_separate_and_self_transfer=True,
             )
+            # fast-flights exposes malformed-response errors without wrapping them.
             try:
                 return get_flights(query)
-            except IndexError as exc:
-                raise _ProviderResponseError("unable to parse response (IndexError)") from exc
+            except (IndexError, TypeError, AttributeError, KeyError, ValueError) as exc:
+                raise _ProviderResponseError(f"unable to parse response ({type(exc).__name__})") from exc
 
         default_cap_hours = StopsPolicy().max_layover_hours
         effective_hours = max(self.max_layover_hours, default_cap_hours)

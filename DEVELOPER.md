@@ -56,6 +56,10 @@ not create a cache; the default cache is opened when the server starts. Set
 `PLAYWRIGHT_TEST_OUTPUT_DIR` to change the browser artifact directory when existing
 test results need to be preserved.
 
+Provider regressions feed synthetic upstream HTML through the actual fast-flights
+parser, covering malformed data, retries, fallback, and repeated JSON/streaming
+optimization requests. External fetches are mocked; these tests consume no quota.
+
 Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine,
 install the browser and OS dependencies with `npx playwright install --with-deps chromium`
 after `npm ci`.

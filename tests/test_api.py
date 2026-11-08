@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,10 @@ from fastapi.testclient import TestClient
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.main import create_app
+from backend.app.models.queries import LegSearch
+from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption
 from backend.app.providers.google_flights import CompositeFlightProvider
+from backend.app.providers.pricing_engine import RealisticPricingProvider
 
 
 @pytest.fixture
@@ -182,6 +186,67 @@ def test_optimize_rejects_degenerate_same_airport_stop(client: TestClient) -> No
     error_events = [e for e in stream_events if e["type"] == "error"]
     assert len(error_events) == 1
     assert "No valid flight combinations" in error_events[0]["detail"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("fallback_available", [False, True])
+def test_repeated_optimization_handles_changing_malformed_provider_responses(
+    client: TestClient,
+    flight_provider: CompositeFlightProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fast_flights_html: Callable[[object], str],
+    stream: bool,
+    fallback_available: bool,
+) -> None:
+    monkeypatch.setenv("SERPAPI_KEY", "test-key" if fallback_available else "")
+    current_html = fast_flights_html([[[[], [[]]]]])
+    fetched: list[str] = []
+
+    def fetch(*_args: object, **_kwargs: object) -> str:
+        fetched.append(current_html)
+        return current_html
+
+    def recover(origin: str, destination: str, departure: date, cabin: ConcreteCabinClass) -> list[FlightLegOption]:
+        options = RealisticPricingProvider().search(LegSearch.single(origin, destination, departure, cabin)).options
+        return [option.model_copy(update={"provider": "serpapi"}) for option in options]
+
+    monkeypatch.setattr("fast_flights.fetcher.fetch_flights_html", fetch)
+    monkeypatch.setattr(flight_provider, "_search_serpapi_google_flights", recover)
+    # Successful fallback results are cached; failed searches must retry without force refresh.
+    payload = {
+        "origin_airports": ["SFO"],
+        "destination_airports": ["SFO"],
+        "earliest_departure": "2026-12-11",
+        "latest_departure": "2026-12-11",
+        "earliest_return": "2026-12-15",
+        "latest_return": "2026-12-15",
+        "stops": [{"id": "london", "label": "London", "airports": ["LHR"], "min_nights": 4, "max_nights": 4}],
+        "weights": {"enable_hub_splitting": False},
+        "provider_mode": "auto",
+        "force_refresh": fallback_available,
+    }
+    for html in (current_html, fast_flights_html(None)):
+        current_html = html
+        previous_calls = len(fetched)
+        response = client.post("/api/optimize", json=payload, headers={"X-Stream-Progress": "1"} if stream else {})
+        if stream:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+            assert events[-1]["type"] == ("result" if fallback_available else "error")
+            body = events[-1]["data"] if fallback_available else events[-1]
+        else:
+            assert response.status_code == (200 if fallback_available else 400)
+            body = response.json()
+        if fallback_available:
+            assert body["api_version"] == 2
+            assert body["recommended"]["total_price_usd"] > 0
+            assert all(leg["provider"] == "serpapi" for leg in body["recommended"]["legs"])
+        else:
+            assert "No valid flight combinations" in body["detail"]
+            assert "An internal error" not in body["detail"]
+        assert len(fetched) > previous_calls
+    assert "Unexpected error during streaming optimization" not in caplog.text
 
 
 def test_optimize_streams_progress_events_and_final_result(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
