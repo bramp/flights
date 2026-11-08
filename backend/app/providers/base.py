@@ -8,13 +8,12 @@ from typing import Any
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.models.queries import LegSearch, SearchIssue, SearchResult
-from backend.app.models.schemas import FlightLegOption, TicketType
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 class FlightSearchProvider(ABC):
-    """Protocol for fetching candidate flight options and multi-slice ticket quotes."""
+    """Protocol for fetching candidate flight options."""
 
     def is_simulation(self) -> bool:
         return False
@@ -27,42 +26,9 @@ class FlightSearchProvider(ABC):
     def search(self, query: LegSearch) -> SearchResult:
         """Return candidate flights and whether the requested search completed."""
 
-    def quote_multi_slice_ticket(
-        self,
-        legs: list[FlightLegOption],
-        ticket_type: TicketType,
-    ) -> float:
-        """Return the combined base fare (USD) for a multi-slice ticket (RT, Open-Jaw, Multi-City).
-        Providers that query live multi-city/round-trip endpoints can override this to query the
-        exact combined PNR price; otherwise uses the legs' round-trip/multi-city fare components.
-        """
-        if not legs:
-            return 0.0
-        if ticket_type == TicketType.ONE_WAY or len(legs) == 1:
-            return round(sum(leg.one_way_base_fare_usd for leg in legs), 2)
-
-        # Round-Trip / Open-Jaw / Multi-City pricing on a shared alliance or the same carrier
-        alliances = {leg.alliance for leg in legs}
-        carriers = {leg.airline.strip().upper() for leg in legs if leg.airline.strip()}
-        any_lcc = any(leg.is_lcc for leg in legs)
-        shared_alliance = len(alliances) == 1 and next(iter(alliances)) in ("Star Alliance", "Oneworld", "SkyTeam")
-        shared_carrier = len(carriers) == 1
-        if any_lcc or not (shared_alliance or shared_carrier):
-            # Non-partner carriers cannot combine onto discounted RT/OJ alliance fare buckets;
-            # GDS prices them as end-on-end one-way fares or full IATA Y/J fares.
-            return round(sum(leg.one_way_base_fare_usd for leg in legs), 2)
-
-        raw_rt_sum = sum(leg.round_trip_half_fare_usd for leg in legs)
-        if ticket_type in (TicketType.ROUND_TRIP, TicketType.OPEN_JAW) and len(legs) == 2:
-            return round(raw_rt_sum, 2)
-
-        # 3+ slice Multi-City on a single PNR carries a modest multi-slice combinability factor
-        combinability_factor = 1.06 if len(legs) >= 3 else 1.0
-        return round(raw_rt_sum * combinability_factor, 2)
-
 
 class CachedFlightProvider(FlightSearchProvider):
-    """Wraps a FlightSearchProvider with persistent SQLite caching for both legs and ticket quotes."""
+    """Wrap a FlightSearchProvider with persistent SQLite search caching."""
 
     def __init__(
         self,
@@ -180,28 +146,3 @@ class CachedFlightProvider(FlightSearchProvider):
             },
         )
         return results
-
-    def quote_multi_slice_ticket(
-        self,
-        legs: list[FlightLegOption],
-        ticket_type: TicketType,
-    ) -> float:
-        if self.delegate.is_simulation() or any(leg.provider == "pricing_engine" for leg in legs):
-            return self.delegate.quote_multi_slice_ticket(legs, ticket_type)
-        quote_key = f"{ticket_type.value}:" + "|".join(f"{leg.leg_id}:{leg.cabin.value}" for leg in legs)
-        if not self.force_refresh:
-            cached_quote = self.cache.get_ticket_quote(quote_key)
-            if cached_quote is not None and "base_fare_usd" in cached_quote:
-                return float(cached_quote["base_fare_usd"])
-
-        fare = self.delegate.quote_multi_slice_ticket(legs, ticket_type)
-        self.cache.store_ticket_quote(
-            quote_key=quote_key,
-            ticket_type=ticket_type.value,
-            payload={
-                "base_fare_usd": fare,
-                "legs": [leg.leg_id for leg in legs],
-                "providers": [leg.provider for leg in legs],
-            },
-        )
-        return fare

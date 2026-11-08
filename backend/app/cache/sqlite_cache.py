@@ -1,4 +1,4 @@
-"""Two-tier SQLite cache for granular individual flights and multi-slice ticket quotes."""
+"""SQLite cache for complete flight searches and granular individual flights."""
 
 from __future__ import annotations
 
@@ -76,16 +76,6 @@ class FlightCache:
             )
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS ticket_quote_cache (
-                    quote_key TEXT PRIMARY KEY,
-                    ticket_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS provider_usage (
                     provider TEXT PRIMARY KEY,
                     call_count INTEGER NOT NULL DEFAULT 0,
@@ -106,16 +96,6 @@ class FlightCache:
                 """
                 DELETE FROM granular_flights
                 WHERE COALESCE(json_extract(payload_json, '$.provider'), 'pricing_engine') = 'pricing_engine'
-                """
-            )
-            conn.execute(
-                """
-                DELETE FROM ticket_quote_cache
-                WHERE json_type(payload_json, '$.providers') IS NULL
-                    OR EXISTS (
-                        SELECT 1 FROM json_each(ticket_quote_cache.payload_json, '$.providers')
-                        WHERE value = 'pricing_engine'
-                    )
                 """
             )
 
@@ -228,57 +208,17 @@ class FlightCache:
         with self._connect() as conn:
             conn.execute("DELETE FROM leg_search_cache")
             conn.execute("DELETE FROM granular_flights")
-            conn.execute("DELETE FROM ticket_quote_cache")
         self.reset_session_counters()
-
-    def get_ticket_quote(self, quote_key: str) -> dict[str, object] | None:
-        """Retrieve a cached multi-slice ticket quote (RT, Open-Jaw, Multi-City) by signature."""
-        now = time.time()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT payload_json, updated_at FROM ticket_quote_cache WHERE quote_key = ?",
-                (quote_key,),
-            ).fetchone()
-            if row and (now - float(row["updated_at"])) <= self.ttl_seconds:
-                self.session_hits += 1
-                data: dict[str, object] = json.loads(row["payload_json"])
-                return data
-        self.session_misses += 1
-        return None
-
-    def store_ticket_quote(
-        self,
-        quote_key: str,
-        ticket_type: str,
-        payload: dict[str, object],
-    ) -> None:
-        """Store a priced multi-slice ticket quote in SQLite."""
-        providers = payload.get("providers")
-        if not isinstance(providers, list) or not providers or "pricing_engine" in providers:
-            return
-        now = time.time()
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO ticket_quote_cache
-                (quote_key, ticket_type, payload_json, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (quote_key, ticket_type, json.dumps(payload), now),
-            )
 
     def get_stats(self) -> CacheStats:
         with self._connect() as conn:
             flights_count = conn.execute("SELECT COUNT(*) AS cnt FROM granular_flights").fetchone()["cnt"]
-            leg_queries_count = conn.execute("SELECT COUNT(*) AS cnt FROM leg_search_cache").fetchone()["cnt"]
-            ticket_quotes_count = conn.execute("SELECT COUNT(*) AS cnt FROM ticket_quote_cache").fetchone()["cnt"]
             serp_row = conn.execute("SELECT call_count FROM provider_usage WHERE provider = 'serpapi'").fetchone()
             total_serp = int(serp_row["call_count"]) if serp_row else 0
         return CacheStats(
             cache_hits=self.session_hits,
             cache_misses=self.session_misses,
             total_cached_flights_in_db=int(flights_count),
-            total_cached_quotes_in_db=int(leg_queries_count) + int(ticket_quotes_count),
             serpapi_calls_this_run=self.session_serpapi_calls,
             fast_flights_calls_this_run=self.session_fast_flights_calls,
             total_serpapi_calls_logged=total_serp,

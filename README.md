@@ -86,7 +86,11 @@ Click **🔍 Optimize Flights & Ticket Combinations** (or load one of the preset
    - **1 Single Multi-City Ticket (1 PNR)** *(baseline with full connection protection)*
    - **Hub-Split via Gateway Hub** *(virtual interlining with a mandatory 4.0h–5.5h self-transfer buffer)*
    - **All Separate One-Way Tickets**
-3. **Click Any Strategy Row:** Clicking a row in the comparison table updates the **Ticket Breakdown** below it (showing every separate PNR to book, exact flight numbers, cabin tags, base fare vs. bag fees, and booking instructions) and updates the highlighted stay dates on the grid above.
+3. **Click Any Strategy Row:** Clicking a row in the comparison table updates the **Ticket Breakdown** below it (showing each proposed ticket, flight numbers, cabin tags, estimated fare and bag fees, pricing assumptions, and booking instructions) and updates the highlighted stay dates on the grid above.
+
+Ticket prices are estimates, not verified combined-ticket quotes. The breakdown
+labels each fare as estimated and lists its assumptions; confirm final fares and
+baggage charges with the airline or booking provider before purchasing.
 
 ---
 
@@ -119,16 +123,16 @@ FARESPLIT_TESTING=1 uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 
 Only this testing mode displays the **Simulated data (testing)** checkbox. Enabling
 it uses exclusively simulated flights, labeled **Simulated estimate**, with a
 testing warning. Turning it off restores live Auto mode. Simulation never reads
-or writes the flight or ticket-quote cache and cannot mix with live results.
+or writes the flight-search cache and cannot mix with live results.
 Do not enable `FARESPLIT_TESTING` on a deployed server.
 
 ### Built-In Quota & Cache Protections
 - **No Unsolicited Queries on Page Load:** Opening or refreshing the page loads your saved setup from cookies/localStorage without firing an optimization run until you click **🔍 Optimize Flights & Ticket Combinations**.
 - **Per-Run Live Query Cap (`Max Live API Queries / Run`):** Inside **⚙️ Weights & Hub Rules**, each run is capped at `25` uncached live queries by default so a single click can never exhaust your monthly quota.
 - **Persistent Quota & Flight Cache (`flights_cache.db`):**
-  - Live flight searches and ticket estimates are stored in SQLite. Simulated data is never cached. A matching unexpired search can be reused with **0 network calls**; individual cached flights do not substitute for a different multi-airport search.
+  - Complete live flight searches are stored in SQLite. Ticket fare estimates are not cached or presented as verified quotes. Simulated data is never cached. A matching unexpired search can be reused with **0 network calls**; individual cached flights do not substitute for a different multi-airport search.
   - The top bar displays both **`SerpApi: X / 250`** (logged persistently in SQLite across sessions) and **`Cache: Y flights`**. Flight source badges show `fast_flights` or `serpapi`; the lightning icon separately identifies cache hits.
-  - On startup, legacy simulated flight entries are removed. Old ticket quotes without source metadata are invalidated because they may include simulated data; live flights and provider usage counters are preserved.
+  - On startup, legacy simulated flight entries are removed; live flights and provider usage counters are preserved.
 
 ---
 

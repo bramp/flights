@@ -128,7 +128,7 @@ def test_simulation_is_testing_only_and_never_cached(
     assert body1["recommended"]["total_price_usd"] > 0
     assert len(body1["strategy_comparison"]) >= 4
     assert body1["cache_stats"]["total_cached_flights_in_db"] == 0
-    assert body1["cache_stats"]["total_cached_quotes_in_db"] == 0
+    assert body1["recommended"]["tickets"][0]["fare_estimate"]["provenance"] == "estimated"
     assert any("simulated" in warning for warning in body1["warnings"])
 
     r2 = client.post("/api/optimize", json=payload)
@@ -137,7 +137,7 @@ def test_simulation_is_testing_only_and_never_cached(
     assert body2["cache_stats"]["cache_misses"] == 0
     assert body2["cache_stats"]["cache_hits"] == 0
     assert body2["cache_stats"]["total_cached_flights_in_db"] == 0
-    assert body2["cache_stats"]["total_cached_quotes_in_db"] == 0
+    assert body2["recommended"]["tickets"][0]["fare_estimate"]["assumptions"]
 
     monkeypatch.delenv("FARESPLIT_TESTING")
     assert client.get("/api/provider-status").json()["testing_mode"] is False

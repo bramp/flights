@@ -2,7 +2,6 @@ const { test: base, expect } = require("@playwright/test");
 
 const cacheStats = {
   total_cached_flights_in_db: 12,
-  total_cached_quotes_in_db: 2,
   cache_hits: 3,
   cache_misses: 2,
   total_serpapi_calls_logged: 7,
@@ -60,7 +59,11 @@ function optimizationResponse(provider = "mock") {
       airline_or_alliance: "Test Airways",
       legs: [leg],
       total_ticket_usd: 1250,
-      base_fare_usd: 1200,
+      fare_estimate: {
+        amount_usd: 1200,
+        provenance: "estimated",
+        assumptions: ["Based on candidate-leg fares; final price is not verified."],
+      },
       baggage_fees_usd: 50,
       pricing_note: "Includes checked baggage.",
       booking_query_summary: "Book SFO to ATH with Test Airways",
@@ -87,7 +90,11 @@ function optimizationResponse(provider = "mock") {
     tickets: [{
       ...recommended.tickets[0],
       label: "Separate outbound booking",
-      base_fare_usd: 1000,
+      fare_estimate: {
+        amount_usd: 1000,
+        provenance: "estimated",
+        assumptions: ["Based on candidate-leg fares; final price is not verified."],
+      },
       total_ticket_usd: 1050,
     }],
   };
@@ -143,6 +150,8 @@ test("Optimize renders results, tickets, cache and quota", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Ticket Strategy Comparison", exact: false })).toBeVisible();
   await expect(page.locator(".comparison-table tbody tr")).toHaveCount(2);
   await expect(page.locator(".price-big")).toHaveText("$1250");
+  await expect(page.locator(".price-block")).toContainText("Estimated total");
+  await expect(page.locator(".ticket-card .badge-subtle").filter({ hasText: "estimated" })).toBeVisible();
   await expect(page.locator(".ticket-list")).toContainText("6:35 PM – 9:00 PM+1");
   await expect(page.locator(".ticket-list")).toContainText("Test Airways (TA123)");
   await expect(page.locator(".leg-preview-list")).toContainText("Athens (ATH)");

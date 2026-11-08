@@ -14,8 +14,10 @@ from backend.app.data.airports import (
 from backend.app.models.queries import LegSearch, SearchResult
 from backend.app.models.schemas import (
     ConcreteCabinClass,
+    FareEstimate,
     FlightLegOption,
     FlightSegment,
+    TicketType,
 )
 from backend.app.providers.base import FlightSearchProvider
 
@@ -158,6 +160,42 @@ def _deterministic_noise(seed_str: str) -> float:
     digest = hashlib.sha256(seed_str.encode("utf-8")).digest()
     val = int.from_bytes(digest[:4], "big")
     return (val % 10000) / 10000.0
+
+
+def estimate_ticket_fare(legs: list[FlightLegOption], ticket_type: TicketType) -> FareEstimate:
+    """Estimate a ticket's base fare from candidate-leg fares; this does not query a ticketing provider."""
+    if not legs:
+        raise ValueError("A fare estimate requires at least one flight leg.")
+
+    one_way_total = round(sum(leg.one_way_base_fare_usd for leg in legs), 2)
+    if ticket_type == TicketType.ONE_WAY or len(legs) == 1:
+        return FareEstimate(
+            amount_usd=one_way_total,
+            assumptions=["Uses candidate-leg one-way fares; baggage and final ticket pricing are not verified."],
+        )
+
+    alliances = {leg.alliance for leg in legs}
+    carriers = {leg.airline.strip().upper() for leg in legs if leg.airline.strip()}
+    shared_alliance = len(alliances) == 1 and next(iter(alliances)) in ("Star Alliance", "Oneworld", "SkyTeam")
+    shared_carrier = len(carriers) == 1
+    if any(leg.is_lcc for leg in legs) or not (shared_alliance or shared_carrier):
+        return FareEstimate(
+            amount_usd=one_way_total,
+            assumptions=[
+                "Sums candidate-leg one-way fares because a combined fare is not available.",
+                "Baggage and final ticket pricing are not verified.",
+            ],
+        )
+
+    estimate = round(sum(leg.round_trip_half_fare_usd for leg in legs), 2)
+    assumptions = [
+        "Sums candidate-leg round-trip half-fares for the shared carrier or alliance.",
+        "Baggage and final ticket pricing are not verified.",
+    ]
+    if ticket_type == TicketType.MULTI_CITY and len(legs) >= 3:
+        estimate = round(estimate * 1.06, 2)
+        assumptions.append("Applies a 6% multi-city combinability estimate.")
+    return FareEstimate(amount_usd=estimate, assumptions=assumptions)
 
 
 class RealisticPricingProvider(FlightSearchProvider):

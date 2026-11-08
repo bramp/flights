@@ -2204,10 +2204,11 @@ function renderOptimizationResults(data) {
             <div>
               <strong>${escapeHtml(t.label)}</strong>
               <span class="badge-subtle" style="margin-left:0.4rem">${escapeHtml(t.airline_or_alliance)}</span>
+              <span class="badge-subtle" style="margin-left:0.4rem" title="${escapeHtml(t.fare_estimate.assumptions.join(" "))}">${escapeHtml(t.fare_estimate.provenance)}</span>
             </div>
             <div>
               <strong>$${t.total_ticket_usd.toFixed(0)}</strong>
-              <span class="price-sub">(Fare $${t.base_fare_usd.toFixed(0)} + Bags $${t.baggage_fees_usd.toFixed(0)})</span>
+              <span class="price-sub">(Fare $${t.fare_estimate.amount_usd.toFixed(0)} + Bags $${t.baggage_fees_usd.toFixed(0)})</span>
             </div>
           </div>
           <div style="font-size:0.78rem; color:#475569; margin-bottom:0.35rem;">${escapeHtml(t.pricing_note)}</div>
@@ -2248,7 +2249,7 @@ function renderOptimizationResults(data) {
           <thead>
             <tr>
               <th>Ticket Partition Strategy</th>
-              <th>Total Cost</th>
+              <th>Estimated Total</th>
               <th>vs. 1 Ticket</th>
               <th>Travel Time</th>
               <th>Tickets</th>
@@ -2275,8 +2276,9 @@ function renderOptimizationResults(data) {
         </div>
         <div class="price-block">
           <div class="price-big">$${activeItin.total_price_usd.toFixed(0)}</div>
+          <div class="price-sub">Estimated total</div>
           <div class="price-sub">
-            Base $${activeItin.total_base_fare_usd.toFixed(0)} + Bags $${activeItin.total_baggage_fees_usd.toFixed(0)}
+            Estimated base $${activeItin.total_base_fare_usd.toFixed(0)} + Bags $${activeItin.total_baggage_fees_usd.toFixed(0)}
           </div>
         </div>
       </div>

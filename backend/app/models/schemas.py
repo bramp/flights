@@ -342,8 +342,19 @@ class FlightLegOption(BaseModel):
         return self
 
 
+class FareProvenance(StrEnum):
+    ESTIMATED = "estimated"
+    VERIFIED = "verified"
+
+
+class FareEstimate(BaseModel):
+    amount_usd: float
+    provenance: FareProvenance = FareProvenance.ESTIMATED
+    assumptions: list[str] = Field(default_factory=list)
+
+
 class BookedTicket(BaseModel):
-    """A single bookable ticket (PNR) covering one or more legs in chronological order."""
+    """A proposed ticket covering one or more legs in chronological order."""
 
     ticket_id: str
     ticket_type: TicketType
@@ -352,7 +363,7 @@ class BookedTicket(BaseModel):
     cabin_summary: str
     legs: list[FlightLegOption]
     leg_indices: list[int] = Field(description="0-based indices of the trip legs covered by this ticket.")
-    base_fare_usd: float
+    fare_estimate: FareEstimate
     baggage_fees_usd: float
     total_ticket_usd: float
     pricing_note: str
@@ -400,7 +411,6 @@ class CacheStats(BaseModel):
     cache_hits: int = 0
     cache_misses: int = 0
     total_cached_flights_in_db: int = 0
-    total_cached_quotes_in_db: int = 0
     serpapi_calls_this_run: int = 0
     fast_flights_calls_this_run: int = 0
     total_serpapi_calls_logged: int = 0

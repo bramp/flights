@@ -9,6 +9,7 @@ from backend.app.models.schemas import (
     BookedTicket,
     ConcreteCabinClass,
     EvaluatedItinerary,
+    FareEstimate,
     FlightLegOption,
     ScheduledStopVisit,
     StrategyKind,
@@ -17,6 +18,7 @@ from backend.app.models.schemas import (
 )
 from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.google_flights import build_google_flights_url
+from backend.app.providers.pricing_engine import estimate_ticket_fare
 from backend.app.solver.cabin import (
     filter_options_by_stops,
     highest_cabin,
@@ -170,7 +172,7 @@ def _assemble_itinerary(
         for t in tickets
     ]
 
-    total_base = round(sum(t.base_fare_usd for t in tickets), 2)
+    total_base = round(sum(t.fare_estimate.amount_usd for t in tickets), 2)
     total_bags = round(sum(t.baggage_fees_usd for t in tickets), 2)
     total_price = round(total_base + total_bags, 2)
 
@@ -254,7 +256,7 @@ def evaluate_single_multi_city_ticket(
             for slice_opts in per_slice_opts
         ]
 
-        base_fare = provider.quote_multi_slice_ticket(chosen_legs, TicketType.MULTI_CITY)
+        fare_estimate = estimate_ticket_fare(chosen_legs, TicketType.MULTI_CITY)
         bag_fees = round(sum(_compute_baggage_fee(leg, request) * 0.75 for leg in chosen_legs), 2)
         slices_str = ", ".join(
             f"{leg.origin}→{leg.destination} ({leg.departure_date.isoformat()})" for leg in chosen_legs
@@ -267,9 +269,9 @@ def evaluate_single_multi_city_ticket(
             cabin_summary=uniform_cabin.value.replace("_", " ").title(),
             legs=chosen_legs,
             leg_indices=list(range(len(chosen_legs))),
-            base_fare_usd=base_fare,
+            fare_estimate=fare_estimate,
             baggage_fees_usd=bag_fees,
-            total_ticket_usd=round(base_fare + bag_fees, 2),
+            total_ticket_usd=round(fare_estimate.amount_usd + bag_fees, 2),
             pricing_note=(
                 f"All {len(chosen_legs)} legs booked on one {alliance} Multi-City PNR in "
                 f"{uniform_cabin.value.replace('_', ' ').title()}."
@@ -326,7 +328,7 @@ def evaluate_all_one_ways(
             key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=False),
         )
         chosen_legs.append(best_leg)
-        base_fare = round(best_leg.one_way_base_fare_usd, 2)
+        fare_estimate = estimate_ticket_fare([best_leg], TicketType.ONE_WAY)
         bag_fee = _compute_baggage_fee(best_leg, request)
         tickets.append(
             BookedTicket(
@@ -337,9 +339,9 @@ def evaluate_all_one_ways(
                 cabin_summary=best_leg.cabin.value.replace("_", " ").title(),
                 legs=[best_leg],
                 leg_indices=[idx],
-                base_fare_usd=base_fare,
+                fare_estimate=fare_estimate,
                 baggage_fees_usd=bag_fee,
-                total_ticket_usd=round(base_fare + bag_fee, 2),
+                total_ticket_usd=round(fare_estimate.amount_usd + bag_fee, 2),
                 pricing_note=(
                     "Point-to-point LCC one-way fare."
                     if best_leg.is_lcc
@@ -395,7 +397,7 @@ def evaluate_open_jaw_plus_regional(
             return None
         best_mid = min(opts, key=lambda o: _leg_generalized_cost(o, request, use_rt_half_fare=False))
         middle_legs.append(best_mid)
-        base_fare = round(best_mid.one_way_base_fare_usd, 2)
+        fare_estimate = estimate_ticket_fare([best_mid], TicketType.ONE_WAY)
         bag_fee = _compute_baggage_fee(best_mid, request)
         middle_tickets.append(
             BookedTicket(
@@ -406,9 +408,9 @@ def evaluate_open_jaw_plus_regional(
                 cabin_summary=best_mid.cabin.value.replace("_", " ").title(),
                 legs=[best_mid],
                 leg_indices=[offset],
-                base_fare_usd=base_fare,
+                fare_estimate=fare_estimate,
                 baggage_fees_usd=bag_fee,
-                total_ticket_usd=round(base_fare + bag_fee, 2),
+                total_ticket_usd=round(fare_estimate.amount_usd + bag_fee, 2),
                 pricing_note="Separate regional flight in its own cabin class (avoids up-faring to long-haul cabin).",
                 booking_query_summary=(
                     f"Book One-Way: {best_mid.origin} → {best_mid.destination} on {best_mid.departure_date.isoformat()} "
@@ -431,7 +433,7 @@ def evaluate_open_jaw_plus_regional(
         t_type = TicketType.ROUND_TRIP if is_exact_rt else TicketType.OPEN_JAW
         t_type_name = "Round-Trip" if is_exact_rt else "Open-Jaw"
 
-        anchor_base = provider.quote_multi_slice_ticket([best_f, best_l], t_type)
+        anchor_fare = estimate_ticket_fare([best_f, best_l], t_type)
         anchor_bags = round(_compute_baggage_fee(best_f, request) + _compute_baggage_fee(best_l, request), 2)
         cabins_str = (
             best_f.cabin.value.replace("_", " ").title()
@@ -446,9 +448,9 @@ def evaluate_open_jaw_plus_regional(
             cabin_summary=cabins_str,
             legs=[best_f, best_l],
             leg_indices=[0, len(schedule.legs) - 1],
-            base_fare_usd=anchor_base,
+            fare_estimate=anchor_fare,
             baggage_fees_usd=anchor_bags,
-            total_ticket_usd=round(anchor_base + anchor_bags, 2),
+            total_ticket_usd=round(anchor_fare.amount_usd + anchor_bags, 2),
             pricing_note=(
                 f"Combines outbound ({best_f.origin}→{best_f.destination}) and return ({best_l.origin}→{best_l.destination}) "
                 f"onto one {alliance} {t_type_name} ticket, eliminating one-way long-haul surcharges."
@@ -530,7 +532,7 @@ def evaluate_nested_round_trips(
             if not inner_chosen:
                 continue
 
-            outer_base = provider.quote_multi_slice_ticket([best_f, best_l], outer_t_type)
+            outer_fare = estimate_ticket_fare([best_f, best_l], outer_t_type)
             outer_bags = round(_compute_baggage_fee(best_f, request) + _compute_baggage_fee(best_l, request), 2)
             outer_ticket = BookedTicket(
                 ticket_id=f"{schedule.schedule_id}-nested-outer-{_slug(outer_alliance)}",
@@ -540,9 +542,9 @@ def evaluate_nested_round_trips(
                 cabin_summary=outer_cabins_str,
                 legs=[best_f, best_l],
                 leg_indices=[0, len(schedule.legs) - 1],
-                base_fare_usd=outer_base,
+                fare_estimate=outer_fare,
                 baggage_fees_usd=outer_bags,
-                total_ticket_usd=round(outer_base + outer_bags, 2),
+                total_ticket_usd=round(outer_fare.amount_usd + outer_bags, 2),
                 pricing_note=f"Outer {outer_alliance} ticket covering intercontinental outbound & return.",
                 booking_query_summary=(
                     f"Book Outer Ticket: {best_f.origin}→{best_f.destination} ({best_f.departure_date.isoformat()}) "
@@ -551,7 +553,14 @@ def evaluate_nested_round_trips(
             )
 
             inner_t_type = TicketType.MULTI_CITY if len(inner_chosen) > 1 else TicketType.ONE_WAY
-            inner_base = round(provider.quote_multi_slice_ticket(inner_chosen, inner_t_type) * 0.94, 2)
+            inner_fare = estimate_ticket_fare(inner_chosen, inner_t_type)
+            inner_fare = FareEstimate(
+                amount_usd=round(inner_fare.amount_usd * 0.94, 2),
+                assumptions=[
+                    *inner_fare.assumptions,
+                    "Applies a 6% regional-ticket discount estimate.",
+                ],
+            )
             inner_bags = round(sum(_compute_baggage_fee(leg, request) * 0.85 for leg in inner_chosen), 2)
             inner_cabins = highest_cabin([leg.cabin for leg in inner_chosen])
             inner_ticket = BookedTicket(
@@ -562,9 +571,9 @@ def evaluate_nested_round_trips(
                 cabin_summary=inner_cabins.value.replace("_", " ").title(),
                 legs=inner_chosen,
                 leg_indices=list(range(1, len(schedule.legs) - 1)),
-                base_fare_usd=inner_base,
+                fare_estimate=inner_fare,
                 baggage_fees_usd=inner_bags,
-                total_ticket_usd=round(inner_base + inner_bags, 2),
+                total_ticket_usd=round(inner_fare.amount_usd + inner_bags, 2),
                 pricing_note=f"Nested {inner_alliance} regional multi-stop ticket in {inner_cabins.value.replace('_', ' ').title()}.",
                 booking_query_summary="Book Inner Regional Ticket: "
                 + ", ".join(

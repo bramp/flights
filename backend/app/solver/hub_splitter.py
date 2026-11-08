@@ -18,12 +18,14 @@ from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     BookedTicket,
     EvaluatedItinerary,
+    FareEstimate,
     FlightLegOption,
     StrategyKind,
     TicketType,
     TripRequest,
 )
 from backend.app.providers.base import FlightSearchProvider
+from backend.app.providers.pricing_engine import estimate_ticket_fare
 from backend.app.solver.cabin import (
     filter_options_by_stops,
     resolve_leg_cabin,
@@ -162,7 +164,7 @@ def evaluate_hub_split_candidates(
                 break
             best_m = min(m_opts, key=lambda o: leg_generalized_cost(o, request, False))
             middle_legs.append(best_m)
-            m_base = round(best_m.one_way_base_fare_usd, 2)
+            fare_estimate = estimate_ticket_fare([best_m], TicketType.ONE_WAY)
             m_bag = compute_baggage_fee(best_m, request)
             middle_tickets.append(
                 BookedTicket(
@@ -173,9 +175,9 @@ def evaluate_hub_split_candidates(
                     cabin_summary=best_m.cabin.value.replace("_", " ").title(),
                     legs=[best_m],
                     leg_indices=[idx + 1],
-                    base_fare_usd=m_base,
+                    fare_estimate=fare_estimate,
                     baggage_fees_usd=m_bag,
-                    total_ticket_usd=round(m_base + m_bag, 2),
+                    total_ticket_usd=round(fare_estimate.amount_usd + m_bag, 2),
                     pricing_note="Separate regional hop.",
                     booking_query_summary=(
                         f"Book One-Way: {best_m.origin}→{best_m.destination} on {best_m.departure_date.isoformat()}"
@@ -185,10 +187,12 @@ def evaluate_hub_split_candidates(
         if not possible:
             continue
 
-        # Price the gateway Open-Jaw ticket via provider's multi-slice quote
-        raw_anchor_fare = provider.quote_multi_slice_ticket([best_0a, best_last], TicketType.OPEN_JAW)
-        # Competitive hub gateways typically offer slightly lower promotional base fares than spoke cities
-        anchor_base = round(raw_anchor_fare * 0.94, 2)
+        # Estimate the gateway Open-Jaw fare from candidate-leg prices.
+        anchor_fare = estimate_ticket_fare([best_0a, best_last], TicketType.OPEN_JAW)
+        anchor_fare = FareEstimate(
+            amount_usd=round(anchor_fare.amount_usd * 0.94, 2),
+            assumptions=[*anchor_fare.assumptions, "Applies a 6% gateway-fare discount estimate."],
+        )
         anchor_bags = round(compute_baggage_fee(best_0a, request) + compute_baggage_fee(best_last, request), 2)
         all_legs = [best_0a, best_0b, *middle_legs, best_last]
 
@@ -203,9 +207,9 @@ def evaluate_hub_split_candidates(
             cabin_summary=best_0a.cabin.value.replace("_", " ").title(),
             legs=[best_0a, best_last],
             leg_indices=[0, len(all_legs) - 1],
-            base_fare_usd=anchor_base,
+            fare_estimate=anchor_fare,
             baggage_fees_usd=anchor_bags,
-            total_ticket_usd=round(anchor_base + anchor_bags, 2),
+            total_ticket_usd=round(anchor_fare.amount_usd + anchor_bags, 2),
             pricing_note=(
                 f"Flies into major gateway hub {hub_code} ({hub_info.city}) to capture gateway fare, "
                 f"returning from {best_last.origin}→{best_last.destination}."
@@ -216,7 +220,7 @@ def evaluate_hub_split_candidates(
             ),
         )
 
-        spoke_base = round(best_0b.one_way_base_fare_usd, 2)
+        spoke_fare = estimate_ticket_fare([best_0b], TicketType.ONE_WAY)
         spoke_bag = compute_baggage_fee(best_0b, request)
         spoke_ticket = BookedTicket(
             ticket_id=f"{schedule.schedule_id}-hub-spoke-{hub_code}",
@@ -226,9 +230,9 @@ def evaluate_hub_split_candidates(
             cabin_summary=best_0b.cabin.value.replace("_", " ").title(),
             legs=[best_0b],
             leg_indices=[1],
-            base_fare_usd=spoke_base,
+            fare_estimate=spoke_fare,
             baggage_fees_usd=spoke_bag,
-            total_ticket_usd=round(spoke_base + spoke_bag, 2),
+            total_ticket_usd=round(spoke_fare.amount_usd + spoke_bag, 2),
             pricing_note=(
                 f"Separate ticket connecting at {hub_code}. Requires ≥ {min_buffer_hours:.1f}h self-transfer buffer."
             ),

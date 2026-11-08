@@ -60,13 +60,13 @@ FARESPLIT_TESTING=1 uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 
 ```
 
 This reveals a **Simulated data (testing)** checkbox. Simulation is exclusive of
-live data and bypasses all flight and quote cache reads/writes. Do not enable this
+live data and bypasses flight-search cache reads/writes. Ticket fare estimates
+are not cached. Do not enable this
 flag on a deployed server. Tests that need the real simulation engine opt in via
 scoped environment fixtures; mocked browser tests do not require the flag.
 
-Cache initialization removes old simulated entries and invalidates legacy ticket
-quotes lacking source metadata. Existing live flights and lifetime usage counters
-are retained.
+Cache initialization removes old simulated flight entries. Existing live flights
+and lifetime usage counters are retained.
 
 ### 4. Pre-Commit Hooks
 Pre-commit hooks are configured in `.pre-commit-config.yaml` and installed into `.git/hooks/pre-commit`:
@@ -101,7 +101,7 @@ flights/
 │       │   ├── airports.json        # Editable airport records, coordinates & nearby alternatives
 │       │   └── airports.py          # Airport loading, metro areas, search & distance helpers
 │       ├── cache/
-│       │   └── sqlite_cache.py      # SQLite cache (leg_search_cache, granular_flights, ticket_quote_cache)
+│       │   └── sqlite_cache.py      # SQLite cache (leg_search_cache, granular_flights)
 │       ├── providers/
 │       │   ├── base.py              # Abstract FlightSearchProvider + CachedFlightProvider wrapper
 │       │   ├── google_flights.py    # Live Google Flights / SerpApi parser & composite provider
@@ -130,7 +130,7 @@ flights/
 ## Key Implementation Details
 
 - **Airport Directory:** Edit `backend/app/data/airports.json` to add or update airports. Each record contains `code` (unique IATA code), `name`, `city`, `country` (two-letter code), `region` (`NA`, `EU`, `ASIA`, `ME`, `OC`, or `SA`), `lat`, `lon`, `metro_code`, `is_major_hub`, and `nearby_codes` (an array of airport codes). Airports in the same metropolitan area share a `metro_code`; nearby alternatives may belong to different metros. Restart the server after editing the file. Display-specific country names, city distances, and metro groupings remain in `airports.py`.
-- **SQLite Caching (`backend/app/cache/sqlite_cache.py`):** Stores leg search results in `leg_search_cache`, individual flight legs in `granular_flights`, and multi-slice ticket quotes in `ticket_quote_cache` inside `flights_cache.db`.
+- **SQLite Caching (`backend/app/cache/sqlite_cache.py`):** Stores complete leg search results in `leg_search_cache` and individual flight legs in `granular_flights` inside `flights_cache.db`. Ticket fare estimates are calculated from candidate-leg fares and are not cached as quotes.
 - **Flight Searches:** Providers and the cache accept a normalized `LegSearch` with ordered origin/destination airport tuples, date, and cabin. Repeated searches are reused within one optimization run, including when force refresh bypasses SQLite. Persistent search entries also include the provider mode and effective transport layover limit. Pre-existing entries without that scope are retained but are not reused.
 - **Search Outcomes:** Providers return a `SearchResult` with options, a `complete`, `partial`, or `failed` status, and explicit issues. Only complete, nonempty live searches are persisted. Budget limits, provider failures, and intentionally skipped airport pairs are reported in optimization warnings. A successful fallback can complete a search; programming errors still propagate. Earlier search cache versions are retained but ignored because they did not prove completeness.
 - **Client-Side Persistence (`backend/app/static/app.js`):** Automatically saves user state to the `faresplit_trip_state_v1` browser cookie and `localStorage` on every change.

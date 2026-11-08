@@ -13,6 +13,7 @@ from backend.app.models.schemas import (
     CabinPolicy,
     CityStopSpec,
     ConcreteCabinClass,
+    FareProvenance,
     FlightLegOption,
     FlightSegment,
     StopsMode,
@@ -22,7 +23,7 @@ from backend.app.models.schemas import (
 )
 from backend.app.providers.base import FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
-from backend.app.providers.pricing_engine import RealisticPricingProvider
+from backend.app.providers.pricing_engine import RealisticPricingProvider, estimate_ticket_fare
 from backend.app.solver.optimizer import optimize_trip
 
 
@@ -301,10 +302,14 @@ def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_
     leg_ek_ret = prov.search(LegSearch.single("LHR", "SFO", date(2026, 12, 20), ConcreteCabinClass.BUSINESS)).options[0]
     leg_gq_mid = prov.search(LegSearch.single("ATH", "LHR", date(2026, 12, 15), ConcreteCabinClass.ECONOMY)).options[0]
 
-    # Same unaligned carrier (EK + EK) gets combined Open-Jaw RT half-fare ($650 + $650 = $1300)
-    assert prov.quote_multi_slice_ticket([leg_ek_out, leg_ek_ret], TicketType.OPEN_JAW) == 1300.0
-    # Different unaligned carriers (EK + GQ) do NOT get combined discount ($1000 + $80 = $1080)
-    assert prov.quote_multi_slice_ticket([leg_ek_out, leg_gq_mid], TicketType.OPEN_JAW) == 1080.0
+    same_carrier = estimate_ticket_fare([leg_ek_out, leg_ek_ret], TicketType.OPEN_JAW)
+    assert same_carrier.amount_usd == 1300.0
+    assert same_carrier.provenance == FareProvenance.ESTIMATED
+    assert "not verified" in same_carrier.assumptions[-1]
+
+    independent_carriers = estimate_ticket_fare([leg_ek_out, leg_gq_mid], TicketType.OPEN_JAW)
+    assert independent_carriers.amount_usd == 1080.0
+    assert "combined fare is not available" in independent_carriers.assumptions[0]
 
     req = TripRequest(
         origin_label="San Francisco",
@@ -323,4 +328,5 @@ def test_non_aligned_same_carrier_can_form_open_jaw_while_distinct_unaligned_do_
     assert StrategyKind.OPEN_JAW_PLUS_REGIONAL in by_strategy
     oj = by_strategy[StrategyKind.OPEN_JAW_PLUS_REGIONAL]
     assert oj.tickets[0].airline_or_alliance == "Emirates"
-    assert oj.tickets[0].base_fare_usd == 1300.0
+    assert oj.tickets[0].fare_estimate.amount_usd == 1300.0
+    assert oj.tickets[0].fare_estimate.provenance == FareProvenance.ESTIMATED

@@ -1,4 +1,4 @@
-"""Tests for the two-tier SQLite flight and ticket quote cache."""
+"""Tests for the SQLite flight-search cache."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 
 from backend.app.cache.sqlite_cache import FlightCache
 from backend.app.models.queries import LegSearch, SearchIssue, SearchIssueKind, SearchResult, SearchStatus
-from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption, ProviderMode, TicketType
+from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption, ProviderMode
 from backend.app.providers.base import CachedFlightProvider, FlightSearchProvider
 from backend.app.providers.google_flights import CompositeFlightProvider
 from backend.app.providers.pricing_engine import RealisticPricingProvider
@@ -73,23 +73,17 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     assert stats_after_second.cache_hits == 1
     assert stats_after_second.cache_misses == 1
 
-    # Multi-slice ticket quote caching
-    fare_1 = cached_provider.quote_multi_slice_ticket(list(first_results[:2]), TicketType.OPEN_JAW)
-    fare_2 = cached_provider.quote_multi_slice_ticket(list(first_results[:2]), TicketType.OPEN_JAW)
-    assert fare_1 == fare_2
-    assert cache.get_stats().cache_hits == 2
-
     # A cached SFO-LHR search does not cover the other airport pairs in a batch.
     batch_query = LegSearch(("SFO", "OAK"), ("LHR", "LGW"), dep_date, ConcreteCabinClass.BUSINESS)
     batch_results = cached_provider.search(batch_query).options
     assert any(opt.origin == "OAK" for opt in batch_results)
     assert any(opt.destination == "LGW" for opt in batch_results)
     assert all(not opt.from_cache for opt in batch_results)
-    assert cache.get_stats().cache_misses == 3  # search, quote, batch
+    assert cache.get_stats().cache_misses == 2
     batch_again = CachedFlightProvider(raw_provider, cache).search(batch_query).options
     assert len(batch_again) == len(batch_results)
     assert all(opt.from_cache for opt in batch_again)
-    assert cache.get_stats().cache_hits == 3
+    assert cache.get_stats().cache_hits == 2
 
     # Force refresh bypasses SQLite once per query, not once per strategy.
     refresh_provider = CachedFlightProvider(delegate=raw_provider, cache=cache, force_refresh=True)
@@ -110,7 +104,6 @@ def test_sqlite_cache_hit_miss_and_granular_persistence(tmp_path: Path) -> None:
     cache.clear_all()
     cleared_stats = cache.get_stats()
     assert cleared_stats.total_cached_flights_in_db == 0
-    assert cleared_stats.total_cached_quotes_in_db == 0
     assert cleared_stats.total_serpapi_calls_logged == 2
 
 
@@ -441,14 +434,12 @@ def test_simulation_bypasses_real_cache_and_never_persists(tmp_path: Path, monke
         assert single
         assert batch
         assert all(option.provider == "pricing_engine" and not option.from_cache for option in single + batch)
-        assert provider.quote_multi_slice_ticket(list(single[:2]), TicketType.OPEN_JAW) > 0
     after = cache.get_stats()
     assert after.total_cached_flights_in_db == before.total_cached_flights_in_db
-    assert after.total_cached_quotes_in_db == before.total_cached_quotes_in_db
     assert after.cache_hits == after.cache_misses == 0
 
 
-def test_cache_rejects_simulated_and_mixed_writes(tmp_path: Path) -> None:
+def test_cache_rejects_simulated_and_mixed_search_results(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "rejected.db")
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
@@ -457,13 +448,11 @@ def test_cache_rejects_simulated_and_mixed_writes(tmp_path: Path) -> None:
     live = live_provider.search(query)
     for result in (fake, SearchResult(options=fake.options + live.options)):
         cache.store_leg_options(query, result, provider_scope=live_provider.cache_scope())
-    cache.store_ticket_quote("simulated", "open_jaw", {"providers": ["pricing_engine"], "base_fare_usd": 100})
     assert cache.get_stats().total_cached_flights_in_db == 0
-    assert cache.get_stats().total_cached_quotes_in_db == 0
     assert cache.get_leg_options(query, provider_scope=live_provider.cache_scope()) is None
 
 
-def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: Path) -> None:
+def test_legacy_simulated_flight_cache_is_removed_without_deleting_live_data(tmp_path: Path) -> None:
     cache = FlightCache(tmp_path / "legacy.db")
     departure = date(2026, 11, 10)
     query = LegSearch.single("SFO", "LHR", departure, ConcreteCabinClass.BUSINESS)
@@ -472,7 +461,6 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
     live = result.options
     cache.store_leg_options(query, result, provider_scope=live_provider.cache_scope())
     cache.record_provider_call("serpapi")
-    cache.store_ticket_quote("live-quote", "open_jaw", {"providers": ["fast_flights"], "base_fare_usd": 200})
     with cache._connect() as conn:
         conn.execute(
             "UPDATE leg_search_cache SET payload_json = ?",
@@ -482,10 +470,6 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
             "UPDATE granular_flights SET payload_json = ? WHERE leg_id = ?",
             (live[0].model_copy(update={"provider": "pricing_engine"}).model_dump_json(), live[0].leg_id),
         )
-        conn.execute(
-            "INSERT INTO ticket_quote_cache VALUES (?, ?, ?, ?)",
-            ("legacy-quote", "open_jaw", json.dumps({"base_fare_usd": 100}), time.time()),
-        )
     cache = FlightCache(cache.db_path)
     results = cache.get_leg_options(query, provider_scope=live_provider.cache_scope())
     assert results is None
@@ -493,6 +477,4 @@ def test_legacy_simulated_cache_is_removed_without_deleting_live_data(tmp_path: 
         rows = conn.execute("SELECT payload_json FROM granular_flights").fetchall()
     assert len(rows) == len(live) - 1
     assert all(json.loads(row["payload_json"])["provider"] == "fast_flights" for row in rows)
-    assert cache.get_ticket_quote("legacy-quote") is None
-    assert cache.get_ticket_quote("live-quote") == {"providers": ["fast_flights"], "base_fare_usd": 200}
     assert cache.get_stats().total_serpapi_calls_logged == 1
