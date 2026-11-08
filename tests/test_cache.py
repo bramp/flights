@@ -203,28 +203,37 @@ def test_cache_refuses_partial_results_and_older_search_keys(tmp_path: Path) -> 
     assert cache.get_leg_options(query, provider_scope=delegate.cache_scope()) is None
 
 
-def test_shortlisted_airport_pairs_are_reported_and_not_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cache = FlightCache(tmp_path / "shortlist.db")
+def test_fast_flights_searches_all_pairs_after_four_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = FlightCache(tmp_path / "all-pairs.db")
     provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS)
-    query = LegSearch(("SFO", "OAK"), ("LHR",), date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    query = LegSearch(("SFO", "OAK", "SJC"), ("LHR", "LGW"), date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
     options = list(MockLiveProvider().search(LegSearch.single("SFO", "LHR", query.departure_date, query.cabin)).options)
     assert len(options) >= 4
-    attempts: list[str] = []
+    attempts: list[tuple[str, str]] = []
 
-    def search(origin: str, *_args: object) -> list[FlightLegOption]:
-        attempts.append(origin)
-        return options
+    def search(origin: str, destination: str, *_args: object) -> list[FlightLegOption]:
+        attempts.append((origin, destination))
+        return options if len(attempts) == 1 else []
 
     monkeypatch.setattr(provider, "_search_fast_flights", search)
     result = CachedFlightProvider(provider, cache).search(query)
-    assert result.status == SearchStatus.PARTIAL
-    assert result.issues[0].kind == SearchIssueKind.TRUNCATED
-    assert "1 of 2 airport pairs" in result.issues[0].message
-    assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is None
-    assert attempts == ["SFO"]
+    assert result.status == SearchStatus.COMPLETE
+    assert not result.issues
+    assert len(result.options) >= 4
+    assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is not None
+    assert attempts == [
+        ("SFO", "LHR"),
+        ("SFO", "LGW"),
+        ("OAK", "LHR"),
+        ("OAK", "LGW"),
+        ("SJC", "LHR"),
+        ("SJC", "LGW"),
+    ]
 
 
-def test_auto_fallback_can_complete_a_failed_primary_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_fallback_hides_recovered_provider_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     cache = FlightCache(tmp_path / "recovered.db")
     provider = CompositeFlightProvider(mode=ProviderMode.AUTO)
     provider.serpapi_key = "test-key"
@@ -245,10 +254,43 @@ def test_auto_fallback_can_complete_a_failed_primary_search(tmp_path: Path, monk
     result = CachedFlightProvider(provider, cache).search(query)
     assert result.status == SearchStatus.COMPLETE
     assert result.options == (option,)
-    assert result.issues[0].kind == SearchIssueKind.PROVIDER_ERROR
-    assert "private transport details" not in result.issues[0].message
+    assert not result.issues
+    assert "Recovered fast-flights failure with SerpApi" in caplog.text
+    assert "private transport details" not in caplog.text
     assert CachedFlightProvider(provider, cache).search(query).options[0].from_cache
     assert attempts == ["fast", "serp"]
+
+
+def test_serpapi_pair_search_recovers_failed_batch(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = CompositeFlightProvider(mode=ProviderMode.SERPAPI, rate_limit_seconds=0)
+    provider.serpapi_key = "test-key"
+    query = LegSearch(("SFO", "OAK"), ("LHR", "LGW"), date(2026, 11, 10), ConcreteCabinClass.BUSINESS)
+    option = MockLiveProvider().search(LegSearch.single("SFO", "LHR", query.departure_date, query.cabin)).options[0]
+    attempts: list[tuple[str, str]] = []
+
+    def search(origin: str, destination: str, *_args: object) -> list[FlightLegOption]:
+        attempts.append((origin, destination))
+        if "," in origin or "," in destination:
+            raise httpx.ConnectError("batch transport detail")
+        return [option]
+
+    monkeypatch.setattr(provider, "_search_serpapi_google_flights", search)
+    result = provider.search(query)
+
+    assert result.status == SearchStatus.COMPLETE
+    assert len(result.options) == 4
+    assert not result.issues
+    assert attempts == [
+        ("SFO,OAK", "LHR,LGW"),
+        ("SFO", "LHR"),
+        ("SFO", "LGW"),
+        ("OAK", "LHR"),
+        ("OAK", "LGW"),
+    ]
+    assert "Recovered batched search failure" in caplog.text
+    assert "batch transport detail" not in caplog.text
 
 
 def test_fast_flights_retry_budget_is_reported_as_partial(
@@ -305,16 +347,17 @@ def test_malformed_fast_flights_response_is_a_provider_failure(
     monkeypatch.setattr(provider, "_search_serpapi_google_flights", recover)
     result = CachedFlightProvider(provider, cache).search(query)
     assert len(fast_calls) == cache.get_stats().fast_flights_calls_this_run == (2 if empty_first_attempt else 1)
-    assert result.issues[0].kind == SearchIssueKind.PROVIDER_ERROR
-    assert f"unable to parse response ({error_type.__name__})" in result.issues[0].message
     if mode == ProviderMode.AUTO:
         assert result.status == SearchStatus.COMPLETE
         assert result.options == (recovered,)
+        assert not result.issues
         assert serp_calls == ["serpapi"]
         assert CachedFlightProvider(provider, cache).search(query).options[0].from_cache
     else:
         assert result.status == SearchStatus.FAILED
         assert not result.options
+        assert result.issues[0].kind == SearchIssueKind.PROVIDER_ERROR
+        assert f"unable to parse response ({error_type.__name__})" in result.issues[0].message
         assert not serp_calls
         assert cache.get_leg_options(query, provider_scope=provider.cache_scope()) is None
 

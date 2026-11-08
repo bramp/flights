@@ -110,9 +110,10 @@ Use the **Provider Mode** dropdown in the top bar to control how flights are fet
 Live modes never fall back to simulated flights. Unavailable lookups or exhausted
 query limits produce fewer results or an error, not fake availability.
 Incomplete searches report warnings and are not saved as complete cached answers.
-This includes airport pairs skipped by the quota-saving shortlist.
-Malformed fast-flights parser responses are reported as provider failures;
-Auto mode can fall back to SerpApi when a key and query budget are available.
+Fast-Flights and Auto modes search every selected airport pair unless the live
+query limit is reached. SerpApi first batches all selected airports, then falls
+back to individual pairs if the batch has no results. A provider failure recovered
+by fallback is logged server-side and does not appear as a user warning.
 
 ### Test-Only Simulation
 Simulation is disabled by default, including for direct API requests. For a dedicated

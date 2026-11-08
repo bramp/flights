@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import math
 import os
 import time
@@ -38,6 +39,7 @@ from backend.app.providers.provider_recordings import record_provider_response
 
 load_dotenv()
 
+_LOGGER = logging.getLogger(__name__)
 _SEAT_TYPE_MAP: dict[ConcreteCabinClass, SeatType] = {
     ConcreteCabinClass.ECONOMY: "economy",
     ConcreteCabinClass.PREMIUM_ECONOMY: "premium-economy",
@@ -370,26 +372,16 @@ class CompositeFlightProvider(FlightSearchProvider):
         return any(issue.kind == SearchIssueKind.BUDGET_EXHAUSTED for issue in result.issues)
 
     @staticmethod
-    def _combine_pairs(
-        query: LegSearch,
-        pair_results: list[SearchResult],
-        pair_count: int,
-        batch_result: SearchResult | None = None,
-    ) -> SearchResult:
+    def _combine_pairs(pair_results: list[SearchResult], batch_result: SearchResult | None = None) -> SearchResult:
         options = tuple(option for result in pair_results for option in result.options)
         issues = [issue for result in pair_results for issue in result.issues]
-        if batch_result is not None:
+        pairs_complete = all(result.status == SearchStatus.COMPLETE for result in pair_results)
+        if batch_result is not None and pairs_complete:
+            for issue in batch_result.issues:
+                _LOGGER.warning("Recovered batched search failure after searching airport pairs: %s", issue.message)
+        elif batch_result is not None:
             issues = [*batch_result.issues, *issues]
-        skipped = pair_count - len(pair_results)
-        if skipped and not any(issue.kind == SearchIssueKind.BUDGET_EXHAUSTED for issue in issues):
-            issues.append(
-                SearchIssue(
-                    SearchIssueKind.TRUNCATED,
-                    f"Search ({','.join(query.origins)}→{','.join(query.destinations)} on {query.departure_date}) "
-                    f"covered {len(pair_results)} of {pair_count} airport pairs; other pairs were not searched.",
-                )
-            )
-        if not skipped and all(result.status == SearchStatus.COMPLETE for result in pair_results):
+        if pairs_complete:
             status = SearchStatus.COMPLETE
         elif any(result.status != SearchStatus.FAILED for result in pair_results) or (
             batch_result is not None and batch_result.status != SearchStatus.FAILED
@@ -400,9 +392,7 @@ class CompositeFlightProvider(FlightSearchProvider):
         return SearchResult(options=options, status=status, issues=tuple(issues))
 
     def search(self, query: LegSearch) -> SearchResult:
-        """Batch multiple origins and destinations into a single query when using SerpApi,
-        or query primary airport pairs when using fast-flights to conserve requests.
-        """
+        """Search all selected airport pairs, batching the initial SerpApi request."""
         origins = query.origins
         destinations = query.destinations
         departure_date = query.departure_date
@@ -432,27 +422,16 @@ class CompositeFlightProvider(FlightSearchProvider):
                 pair_results.append(result)
                 if self._has_budget_issue(result):
                     break
-            return self._combine_pairs(query, pair_results, len(pairs), batch)
+            return self._combine_pairs(pair_results, batch)
 
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
-            primary_pairs = [(o, d) for o in origins[:2] for d in destinations[:2] if o != d]
             pair_results = []
-            option_count = 0
-            for orig, dest in primary_pairs:
+            for orig, dest in pairs:
                 result = self._search_pair(LegSearch.single(orig, dest, departure_date, cabin))
                 pair_results.append(result)
-                option_count += len(result.options)
-                if option_count >= 4 or self._has_budget_issue(result):
+                if self._has_budget_issue(result):
                     break
-            if not option_count and not any(self._has_budget_issue(result) for result in pair_results):
-                for orig, dest in pairs:
-                    if (orig, dest) in primary_pairs:
-                        continue
-                    result = self._search_pair(LegSearch.single(orig, dest, departure_date, cabin))
-                    pair_results.append(result)
-                    if self._has_budget_issue(result):
-                        break
-            return self._combine_pairs(query, pair_results, len(pairs))
+            return self._combine_pairs(pair_results)
 
         raise ValueError(f"Unsupported flight provider mode: {self.mode}")
 
@@ -470,7 +449,9 @@ class CompositeFlightProvider(FlightSearchProvider):
             return serp
         issues = (*fast.issues, *serp.issues)
         if serp.status == SearchStatus.COMPLETE:
-            return SearchResult(options=serp.options, issues=issues)
+            for issue in fast.issues:
+                _LOGGER.warning("Recovered fast-flights failure with SerpApi: %s", issue.message)
+            return SearchResult(options=serp.options, issues=serp.issues)
         status = SearchStatus.PARTIAL if fast.status != SearchStatus.FAILED else serp.status
         return SearchResult(options=serp.options, status=status, issues=issues)
 

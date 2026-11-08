@@ -243,6 +243,7 @@ def test_repeated_optimization_handles_unpriced_and_missing_result_groups(
             assert body["api_version"] == 2
             assert body["recommended"]["total_price_usd"] > 0
             assert all(leg["provider"] == "serpapi" for leg in body["recommended"]["legs"])
+            assert not any("fast-flights" in warning for warning in body.get("warnings", []))
         else:
             assert "No valid flight combinations" in body["detail"]
             assert "An internal error" not in body["detail"]
