@@ -1,4 +1,9 @@
-"""Pluggable provider adapter supporting fast-flights (free scraper), SerpApi (batched), and offline simulation."""
+"""Search live flight providers, parse responses, and build search links.
+
+The composite provider supports fast-flights, SerpApi, and a test-only
+simulator. Wrap live searches in ``CachedFlightProvider`` so they use the
+flight cache.
+"""
 
 from __future__ import annotations
 
@@ -55,7 +60,20 @@ _CABIN_ORDER: dict[ConcreteCabinClass, int] = {
 
 
 def _extract_simple_datetime(dt_obj: Any) -> datetime | None:
-    """Extract a naive local datetime from a fast_flights `SimpleDatetime(date=(Y, M, D), time=(H, M))`."""
+    """Extract a fast-flights local wall time from date and time tuples.
+
+    The returned datetime is tagged with UTC without converting the local
+    time; it does not represent a verified UTC instant. A missing time
+    defaults to midnight. Missing or invalid calendar values return ``None``.
+    Time components that cannot be converted to integers can raise an error.
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> from backend.app.providers.google_flights import _extract_simple_datetime
+        >>> raw = SimpleNamespace(date=(2026, 11, 10), time=(9, 30))
+        >>> _extract_simple_datetime(raw).isoformat()
+        '2026-11-10T09:30:00+00:00'
+    """
     if dt_obj is None:
         return None
     d_tuple = getattr(dt_obj, "date", None)
@@ -79,8 +97,41 @@ def build_google_flights_url(
     baggage: BaggageConfig | None = None,
     stops_policy: StopsPolicy | None = None,
 ) -> str:
-    """Build a direct Google Flights search URL (`?tfs=...`) pre-populated with all slices,
-    dates, cabin class, stop limits, max layover duration, and baggage for a bookable ticket.
+    """Build a Google Flights search URL for all supplied ticket legs.
+
+    The link specifies one adult, USD, and the highest cabin across the legs.
+    It encodes an exact two-leg reverse route as a round trip when requested;
+    other multi-leg routes use multi-city search. It does not select exact
+    flight numbers, book a ticket, or verify its availability or price.
+
+    Args:
+        legs: Ticket legs in the order they will be flown.
+        ticket_type: Proposed ticket type used to choose the search shape.
+        baggage: Optional carry-on and checked-bag search preferences.
+        stops_policy: Optional connection limit used for layover filtering.
+            The encoded limit also allows the candidate leg's average layover,
+            rounded up to 30 minutes.
+
+    Returns:
+        A search URL, or the Google Flights home URL when no legs are given.
+
+    Examples:
+        Build a link without making a network request. This example uses a
+        synthetic leg, not a bookable flight.
+
+        >>> from datetime import date
+        >>> from urllib.parse import parse_qs, urlparse
+        >>> from backend.app.models.queries import LegSearch
+        >>> from backend.app.models.schemas import ConcreteCabinClass, TicketType
+        >>> from backend.app.providers.pricing_engine import RealisticPricingProvider
+        >>> from backend.app.providers.google_flights import build_google_flights_url
+        >>> build_google_flights_url([], TicketType.ONE_WAY)
+        'https://www.google.com/travel/flights'
+        >>> query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+        >>> leg = RealisticPricingProvider().search(query).options[0]
+        >>> url = build_google_flights_url([leg], TicketType.ONE_WAY)
+        >>> "tfs" in parse_qs(urlparse(url).query)
+        True
     """
     if not legs:
         return "https://www.google.com/travel/flights"
@@ -130,8 +181,7 @@ def build_google_flights_url(
     return q.url()
 
 
-# Lookup table mapping 2-letter IATA airline code or airline name to (alliance, is_lcc, bag_fee_usd).
-# Used ONLY to enrich live Google Flights responses when alliance metadata isn't in the payload.
+# Static carrier metadata used to supplement live responses. Bag fees are estimates.
 AIRLINE_METADATA_BY_CODE: dict[str, tuple[str, bool, float]] = {
     c.code: (c.alliance, c.is_lcc, c.bag_fee_usd) for c in CARRIERS
 }
@@ -139,8 +189,8 @@ AIRLINE_METADATA_BY_NAME: dict[str, tuple[str, str, bool, float]] = {
     c.name.lower(): (c.code, c.alliance, c.is_lcc, c.bag_fee_usd) for c in CARRIERS
 }
 
-# Minimal IATA 2-letter alliance & LCC rosters so live Google Flights carriers are tagged
-# accurately without hardcoding hub/route profiles in CARRIERS.
+# Manually maintained alliance and low-cost carrier rosters for carriers not
+# listed in CARRIERS. Classifications can become outdated.
 _ALLIANCE_ROSTERS: dict[str, tuple[str, ...]] = {
     "Star Alliance": (
         "A3",
@@ -218,7 +268,11 @@ DISCOVERED_AIRLINE_CODES_BY_NAME: dict[str, str] = {}
 
 
 def register_discovered_airline(code: str, name: str) -> None:
-    """Register an airline's 2-letter IATA code and display name extracted from a flight search response."""
+    """Register a discovered airline name and two-character code in memory.
+
+    Names are stored in lowercase and codes in uppercase. Ignore blank names
+    and codes that are not two alphanumeric characters.
+    """
     clean_code = code.strip().upper()
     clean_name = name.strip().lower()
     if len(clean_code) == 2 and clean_code.isalnum() and clean_name:
@@ -226,7 +280,22 @@ def register_discovered_airline(code: str, name: str) -> None:
 
 
 def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str, str, bool, float]:
-    """Return (code, alliance, is_lcc, default_bag_fee) from live carrier code or name."""
+    """Resolve carrier metadata from a live response's code or name.
+
+    Prefer static code metadata, then alliance rosters and known or discovered
+    names. Unknown carriers use a non-aligned classification and an estimated
+    $45 checked-bag fee. When both a code and name are supplied, a valid pair
+    is also registered in the process-wide discovered-airline map.
+
+    Returns:
+        A tuple of carrier code, alliance, low-cost flag, and estimated fee
+        per checked bag in USD. These values are not a verified fare policy.
+
+    Examples:
+        >>> from backend.app.providers.google_flights import resolve_airline_metadata
+        >>> resolve_airline_metadata("UA", "")
+        ('UA', 'Star Alliance', False, 40.0)
+    """
     code = airline_code.strip().upper()
     if code and airline_name:
         register_discovered_airline(code, airline_name)
@@ -259,19 +328,36 @@ def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str,
 
 
 class _LiveQueryBudgetExceeded(Exception):
-    pass
+    """Signal that a retry cannot run within the live-query budget."""
 
 
 class _ProviderResponseError(Exception):
-    pass
+    """Signal an invalid or rejected response from a live provider."""
 
 
 class CompositeFlightProvider(FlightSearchProvider):
-    """Multi-mode flight provider supporting:
-    - `fast_flights`: Free live Google Flights protobuf scraping with proactive rate-limiting.
-    - `serpapi`: Official SerpApi Google Flights JSON API with multi-airport comma batching & quota cap.
-    - `auto`: Uses `fast_flights` first (0 SerpApi quota), falling back to `serpapi` if needed.
-    - `offline`: Test-only local simulation (`RealisticPricingProvider`); requires FARESPLIT_TESTING=1.
+    """Search fast-flights, SerpApi, or a test-only simulated provider.
+
+    Fast-flights searches selected airport pairs. SerpApi first batches the
+    selected airports and can retry individual pairs. Auto mode tries
+    fast-flights first and can use SerpApi when it is configured. Live modes
+    never fall back to simulated flights. Offline mode requires
+    ``FARESPLIT_TESTING=1`` for a nonempty search.
+
+    Args:
+        cache: Optional cache used to record live-provider usage. Search-result
+            caching requires a separate ``CachedFlightProvider`` wrapper.
+        mode: Provider mode to use.
+        max_api_calls: Maximum live queries, including retries, for a run.
+        rate_limit_seconds: Minimum delay between live calls. If omitted, use
+            ``FLIGHT_SEARCH_DELAY_SECONDS`` or the backend-specific default.
+
+    Examples:
+        >>> from backend.app.models.schemas import ProviderMode
+        >>> from backend.app.providers.google_flights import CompositeFlightProvider
+        >>> provider = CompositeFlightProvider(mode=ProviderMode.FAST_FLIGHTS, rate_limit_seconds=0)
+        >>> provider.is_simulation(), provider.api_calls_this_run
+        (False, 0)
     """
 
     def __init__(
@@ -281,6 +367,7 @@ class CompositeFlightProvider(FlightSearchProvider):
         max_api_calls: int = 25,
         rate_limit_seconds: float | None = None,
     ) -> None:
+        """Initialize provider settings without making a live search."""
         load_dotenv()
         self.serpapi_key = os.environ.get("SERPAPI_KEY", "").strip()
         self.cache = cache
@@ -296,9 +383,11 @@ class CompositeFlightProvider(FlightSearchProvider):
         self._last_request_ts = 0.0
 
     def is_simulation(self) -> bool:
+        """Return whether the configured mode uses simulated flights."""
         return self.mode == ProviderMode.OFFLINE
 
     def cache_scope(self) -> str:
+        """Identify the mode and effective layover limit for cache isolation."""
         effective_layover = max(self.max_layover_hours, StopsPolicy().max_layover_hours)
         return f"google-flights:{self.mode.value}:layover={effective_layover:g}"
 
@@ -309,6 +398,22 @@ class CompositeFlightProvider(FlightSearchProvider):
         max_api_calls: int,
         stops_policy: StopsPolicy | None = None,
     ) -> None:
+        """Configure a new run and reset its live-query counter.
+
+        This refreshes the SerpApi key from the environment, updates the
+        cache's active-provider label, and applies the requested layover
+        policy. Configure the provider before constructing its cache wrapper.
+
+        Args:
+            cache: Cache used to track provider calls.
+            mode: Provider mode for the run.
+            max_api_calls: Maximum live queries, including retries.
+            stops_policy: Optional maximum layover policy.
+
+        Raises:
+            ValueError: If offline mode is selected without
+                ``FARESPLIT_TESTING=1``.
+        """
         load_dotenv()
         self.serpapi_key = os.environ.get("SERPAPI_KEY", "").strip()
         self.cache = cache
@@ -321,6 +426,7 @@ class CompositeFlightProvider(FlightSearchProvider):
             raise ValueError("Simulated flights are only available when FARESPLIT_TESTING=1.")
 
     def _throttle(self, default_delay: float) -> None:
+        """Wait for the minimum interval between live requests, in seconds."""
         delay = self.rate_limit_seconds if self.rate_limit_seconds is not None else default_delay
         if delay <= 0:
             return
@@ -330,9 +436,11 @@ class CompositeFlightProvider(FlightSearchProvider):
         self._last_request_ts = time.monotonic()
 
     def _can_make_live_call(self) -> bool:
+        """Return whether the run has remaining live-query budget."""
         return self.api_calls_this_run < self.max_api_calls
 
     def _budget_issue(self) -> SearchIssue:
+        """Describe the exhausted live-query budget for a search result."""
         return SearchIssue(
             SearchIssueKind.BUDGET_EXHAUSTED,
             f"Reached per-run live API limit ({self.max_api_calls} queries). "
@@ -340,6 +448,12 @@ class CompositeFlightProvider(FlightSearchProvider):
         )
 
     def _attempt(self, query: LegSearch, backend: Literal["fast_flights", "serpapi"]) -> SearchResult:
+        """Run one backend search and classify recognized provider failures.
+
+        Exhausting the budget before a call fails the search. Exhausting it
+        during a retry reports a partial search. Unexpected programming
+        errors propagate rather than being reported as provider failures.
+        """
         if not self._can_make_live_call():
             return SearchResult(status=SearchStatus.FAILED, issues=(self._budget_issue(),))
 
@@ -369,10 +483,16 @@ class CompositeFlightProvider(FlightSearchProvider):
 
     @staticmethod
     def _has_budget_issue(result: SearchResult) -> bool:
+        """Return whether a result reports an exhausted live-query budget."""
         return any(issue.kind == SearchIssueKind.BUDGET_EXHAUSTED for issue in result.issues)
 
     @staticmethod
     def _combine_pairs(pair_results: list[SearchResult], batch_result: SearchResult | None = None) -> SearchResult:
+        """Combine pair results and retain issues from incomplete searches.
+
+        If all pair searches complete, a recovered batch failure is logged
+        instead of returned as a search issue.
+        """
         options = tuple(option for result in pair_results for option in result.options)
         issues = [issue for result in pair_results for issue in result.issues]
         pairs_complete = all(result.status == SearchStatus.COMPLETE for result in pair_results)
@@ -392,7 +512,24 @@ class CompositeFlightProvider(FlightSearchProvider):
         return SearchResult(options=options, status=status, issues=tuple(issues))
 
     def search(self, query: LegSearch) -> SearchResult:
-        """Search all selected airport pairs, batching the initial SerpApi request."""
+        """Search the selected airport pairs with the configured provider.
+
+        Pairs with identical endpoints are skipped. Fast-flights and auto
+        search the remaining pairs until the budget is exhausted. SerpApi
+        first searches the airports as a batch and may retry individual pairs
+        when that search returns no options. A query with no distinct pair
+        returns a complete empty result.
+
+        Args:
+            query: Selected airports, departure date, and cabin.
+
+        Returns:
+            Candidate options, completion status, and provider or budget issues.
+
+        Raises:
+            ValueError: If the mode is unsupported or an offline search with
+                a distinct pair is requested without ``FARESPLIT_TESTING=1``.
+        """
         origins = query.origins
         destinations = query.destinations
         departure_date = query.departure_date
@@ -436,6 +573,11 @@ class CompositeFlightProvider(FlightSearchProvider):
         raise ValueError(f"Unsupported flight provider mode: {self.mode}")
 
     def _search_pair(self, query: LegSearch) -> SearchResult:
+        """Search one pair and use SerpApi after an eligible auto-mode failure.
+
+        A recovered fast-flights failure is logged rather than included in
+        the successful SerpApi result.
+        """
         fast: SearchResult | None = None
         if self.mode in (ProviderMode.FAST_FLIGHTS, ProviderMode.AUTO):
             fast = self._attempt(query, "fast_flights")
@@ -462,6 +604,11 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
+        """Fetch fast-flights options, retrying once without a layover cap.
+
+        The retry occurs only when the first response is empty and budget
+        remains. Each fetch counts against the live-query budget.
+        """
         self._throttle(default_delay=1.0)
         self.api_calls_this_run += 1
         if self.cache is not None:
@@ -469,6 +616,7 @@ class CompositeFlightProvider(FlightSearchProvider):
             self.cache.active_provider = "fast_flights"
 
         def _fetch_results(layover_limit: int | None) -> list[Any]:
+            """Fetch and parse HTML, recording responses when enabled or invalid."""
             query = create_query(
                 flights=[
                     FlightQuery(
@@ -550,8 +698,12 @@ class CompositeFlightProvider(FlightSearchProvider):
 
     @staticmethod
     def _compute_fast_flights_layovers(raw_flights: list[Any]) -> list[float]:
-        """Compute individual layover durations (hours) between consecutive fast_flights segments
-        using their local arrival and departure `(date, time)` tuples.
+        """Compute layover hours between consecutive fast-flights segments.
+
+        Subtract the local arrival and departure wall times at each connection.
+        Missing dates, invalid calendar values, and negative differences use
+        an estimated 1.75 hours for that connection. A time component that
+        cannot be converted to an integer can raise an error.
         """
         if len(raw_flights) <= 1:
             return []
@@ -572,12 +724,17 @@ class CompositeFlightProvider(FlightSearchProvider):
         options: list[FlightLegOption],
         max_total: int = 15,
     ) -> list[FlightLegOption]:
-        """Preserve top options across each stops bucket (nonstop, 1-stop, 2+-stop) before capping,
-        prioritizing normal connections and ranking by generalized cost (base fare + layover time).
+        """Rank options while sampling nonstop, one-stop, and two-plus-stop buckets.
+
+        Take up to five from each bucket before filling remaining slots. Rank
+        normal connections ahead of those over the default average layover
+        limit, then by one-way fare plus $35 per layover hour and duration.
+        Sort the final selection by that rank and return at most ``max_total``.
         """
         default_cap = StopsPolicy().max_layover_hours
 
         def rank_key(opt: FlightLegOption) -> tuple[bool, float, float]:
+            """Rank excessive layovers after normal connections."""
             over_cap = opt.stops_count > 0 and (opt.layover_hours / opt.stops_count) > default_cap
             return (over_cap, opt.one_way_base_fare_usd + opt.layover_hours * 35.0, opt.duration_hours)
 
@@ -607,7 +764,32 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
-        """Convert fast_flights `Flights` objects into normalized `FlightLegOption` instances."""
+        """Convert parsed fast-flights results into candidate leg options.
+
+        Skip results without a nonzero price or segments and return up to 15 ranked
+        options. Airline and airport discoveries and observed durations are
+        registered in process-wide metadata. Flight numbers are synthesized;
+        round-trip half-fares and baggage details are estimates.
+
+        Args:
+            results: Parsed fast-flights results, optionally with metadata.
+            origin: Fallback origin when a segment lacks an airport code.
+            destination: Fallback destination when a segment lacks a code.
+            departure_date: Requested date, also used for missing segment dates.
+            cabin: Requested cabin for the candidate legs.
+
+        Returns:
+            Normalized candidate options. This parser does not fetch flights.
+
+        Examples:
+            >>> from datetime import date
+            >>> from backend.app.models.schemas import ConcreteCabinClass
+            >>> from backend.app.providers.google_flights import CompositeFlightProvider
+            >>> CompositeFlightProvider.parse_fast_flights_results(
+            ...     [], "SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY
+            ... )
+            []
+        """
         if not results:
             return []
 
@@ -734,6 +916,7 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
+        """Fetch and parse one SerpApi request, which may batch airport codes."""
         cabin_map = {
             ConcreteCabinClass.ECONOMY: "1",
             ConcreteCabinClass.PREMIUM_ECONOMY: "2",
@@ -813,9 +996,33 @@ class CompositeFlightProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
-        """Parse actual Google Flights JSON itineraries into normalized FlightLegOption objects.
-        Extracts real segments, layover hubs, durations, flight numbers, and fares directly
-        from the response payload without relying on synthetic hub or region tables.
+        """Parse a SerpApi Google Flights payload into candidate leg options.
+
+        Combine the best and other result groups, skipping entries without a
+        price or segments. Missing fields can use fallback airports, times,
+        durations, or flight numbers. Round-trip half-fares and baggage details
+        are estimates. Register discovered airlines, airports, and observed
+        durations in process-wide metadata.
+
+        Args:
+            data: Decoded SerpApi JSON object.
+            origin: Requested origin codes; the first is used as a fallback.
+            destination: Requested destination codes; the first is a fallback.
+            departure_date: Requested date, also used for missing segment dates.
+            cabin: Requested cabin for the candidate legs.
+
+        Returns:
+            Up to 15 ranked candidate options. This parser makes no network
+            request and does not verify the resulting ticket prices.
+
+        Examples:
+            >>> from datetime import date
+            >>> from backend.app.models.schemas import ConcreteCabinClass
+            >>> from backend.app.providers.google_flights import CompositeFlightProvider
+            >>> CompositeFlightProvider.parse_google_flights_payload(
+            ...     {}, "SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY
+            ... )
+            []
         """
         best_raw: list[dict[str, Any]] = data.get("best_flights") or []
         other_raw: list[dict[str, Any]] = data.get("other_flights") or []

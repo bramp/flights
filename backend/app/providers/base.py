@@ -1,4 +1,4 @@
-"""Abstract flight search provider and cache-backed provider decorator."""
+"""Define the flight search interface and its cache-backed wrapper."""
 
 from __future__ import annotations
 
@@ -86,22 +86,78 @@ ProgressCallback = Callable[[ProgressEvent], None]
 
 
 class FlightSearchProvider(ABC):
-    """Protocol for fetching candidate flight options."""
+    """Define a source of candidate flight-leg options.
+
+    Implementations return a ``SearchResult`` that distinguishes a complete
+    search from a partial or failed search. An empty result can be complete.
+    """
 
     def is_simulation(self) -> bool:
+        """Return whether this provider generates simulated flights."""
         return False
 
     def cache_scope(self) -> str:
-        """Identify provider settings that affect the candidates returned by a search."""
+        """Identify provider settings that affect the candidates returned by a search.
+
+        The default scope is the fully qualified provider class name.
+        Providers with configurable search behavior should include those
+        settings in their scope.
+        """
         return f"{type(self).__module__}.{type(self).__qualname__}"
 
     @abstractmethod
     def search(self, query: LegSearch) -> SearchResult:
-        """Return candidate flights and whether the requested search completed."""
+        """Return candidate flights and whether the requested search completed.
+
+        Args:
+            query: Airports, departure date, and cabin for the requested leg.
+
+        Returns:
+            Candidate options, completion status, and any search issues.
+        """
 
 
 class CachedFlightProvider(FlightSearchProvider):
-    """Wrap a FlightSearchProvider with persistent SQLite search caching."""
+    """Wrap a provider with per-run reuse and persistent search caching.
+
+    All search outcomes, including empty, partial, and failed results, are
+    reused within this wrapper. SQLite stores only complete, nonempty results
+    that contain no simulated options. A simulated delegate bypasses
+    persistent reads and writes. Forced refresh skips persistent reads but
+    still permits eligible writes and per-run reuse.
+
+    Args:
+        delegate: Provider already configured for this run. Its cache scope is
+            captured when the wrapper is constructed.
+        cache: SQLite cache used for live results and progress counters.
+        force_refresh: Skip persistent cache reads for this run.
+        progress_callback: Optional callback receiving frozen progress events.
+        planned_queries: Initial set used to estimate search progress.
+
+    Attributes:
+        planned_queries: Searches expected or encountered during this run.
+        completed_queries: Searches completed by this wrapper.
+        search_issues: Issues reported by the first execution of each query.
+
+    Examples:
+        Wrap a simulated provider with a temporary cache:
+
+        >>> from datetime import date
+        >>> from pathlib import Path
+        >>> from tempfile import TemporaryDirectory
+        >>> from backend.app.cache.sqlite_cache import FlightCache
+        >>> from backend.app.models.queries import LegSearch
+        >>> from backend.app.models.schemas import ConcreteCabinClass
+        >>> from backend.app.providers.base import CachedFlightProvider
+        >>> from backend.app.providers.pricing_engine import RealisticPricingProvider
+        >>> with TemporaryDirectory() as directory:
+        ...     cache = FlightCache(Path(directory) / "flights.db")
+        ...     provider = CachedFlightProvider(RealisticPricingProvider(), cache)
+        ...     query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+        ...     first = provider.search(query)
+        ...     first is provider.search(query), first.options[0].provider, cache.get_stats().cache_misses
+        (True, 'pricing_engine', 0)
+    """
 
     def __init__(
         self,
@@ -111,6 +167,7 @@ class CachedFlightProvider(FlightSearchProvider):
         progress_callback: ProgressCallback | None = None,
         planned_queries: set[LegSearch] | None = None,
     ) -> None:
+        """Initialize the wrapper and capture the delegate's cache scope."""
         self.delegate = delegate
         self.cache = cache
         self.force_refresh = force_refresh
@@ -129,12 +186,29 @@ class CachedFlightProvider(FlightSearchProvider):
 
     @staticmethod
     def format_query_label(query: LegSearch) -> str:
+        """Format a leg search for progress messages.
+
+        Examples:
+            >>> from datetime import date
+            >>> from backend.app.models.queries import LegSearch
+            >>> from backend.app.models.schemas import ConcreteCabinClass
+            >>> from backend.app.providers.base import CachedFlightProvider
+            >>> query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+            >>> CachedFlightProvider.format_query_label(query)
+            'SFO → LHR (2026-11-10 · Economy)'
+        """
         orig_display = ", ".join(query.origins)
         dest_display = ", ".join(query.destinations)
         cabin_display = query.cabin.value.replace("_", " ").title()
         return f"{orig_display} → {dest_display} ({query.departure_date.isoformat()} · {cabin_display})"
 
     def compute_progress_pct(self) -> int:
+        """Estimate progress from query and strategy completion.
+
+        Query completion has 75% of the weight and strategy completion has
+        25%. The result is rounded and bounded from 3 to 99; final completion
+        is reported separately by the caller.
+        """
         total_q = max(1, len(self.planned_queries))
         done_q = min(total_q, len(self.completed_queries))
         q_ratio = done_q / total_q
@@ -149,6 +223,18 @@ class CachedFlightProvider(FlightSearchProvider):
         last_query: QueryProgress | None = None,
         progress_pct: int | None = None,
     ) -> None:
+        """Send a progress snapshot to the callback, if one is configured.
+
+        Args:
+            phase: Current progress event name.
+            current_query: Display label for the current search.
+            last_query: Optional details of the most recently completed search.
+            progress_pct: Optional explicit percentage. If omitted, compute an
+                estimate from the current query and strategy counts.
+
+        The snapshot also includes schedule, strategy, cache, and live-call
+        counters. Exceptions raised by the callback propagate to the caller.
+        """
         if self.progress_callback is None:
             return
         total_q = max(len(self.planned_queries), len(self.completed_queries), 1)
@@ -175,6 +261,19 @@ class CachedFlightProvider(FlightSearchProvider):
         )
 
     def search(self, query: LegSearch) -> SearchResult:
+        """Return a search result, reusing or caching it when eligible.
+
+        A query already seen by this wrapper returns its in-run result without
+        another cache lookup, provider call, or progress event. A first search
+        records its issues and sends start and completion events if a
+        progress callback is configured.
+
+        Args:
+            query: Leg search to reuse or execute.
+
+        Returns:
+            The cached or delegated result, including its completion status.
+        """
         if query in self._run_results:
             return self._run_results[query]
 

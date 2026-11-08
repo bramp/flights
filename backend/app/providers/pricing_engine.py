@@ -1,4 +1,9 @@
-"""Realistic airline schedule, alliance, cabin, and non-linear fare engine."""
+"""Generate synthetic flight options and estimate ticket fares.
+
+The flight provider produces test data, not bookable flights or a fallback
+for failed live searches. Fare estimates use the supplied candidate legs and
+do not request or verify a ticket price.
+"""
 
 from __future__ import annotations
 
@@ -24,19 +29,32 @@ from backend.app.providers.base import FlightSearchProvider
 
 @dataclass(frozen=True)
 class CarrierProfile:
-    """Reference carrier metadata and synthetic fallback simulation parameters.
+    """Describe reference carrier metadata and synthetic pricing parameters.
 
-    NOTE ON DATA PROVENANCE & VALIDITY:
-    - `code`, `name`, `alliance`, and `is_lcc`: Sourced from public IATA 2-letter airline
-      designators and official Star Alliance / Oneworld / SkyTeam member rosters (accurate
-      as of 2026). When using live Google Flights queries, Google returns the airline name/code
-      and exact flight segments, so only `alliance`, `is_lcc`, and fallback baggage fee metadata
-      are needed if the API response omits alliance/baggage details.
-    - `regions`, `hubs`, and `price_factor`: Hand-authored approximations used ONLY by
-      `RealisticPricingProvider` (the offline simulator/fallback) to synthesize plausible routes
-      and prices when no live Google Flights provider is active. Live flight providers DO NOT
-      use `regions`, `hubs`, or `price_factor` — actual routes, layover hubs, durations, and
-      prices come directly from the Google Flights response.
+    The live adapters use the static carrier code, name, alliance, low-cost
+    flag, and estimated bag fee to enrich responses. Regions, hubs, and price
+    factors are approximations used only to generate simulated options.
+    Carrier metadata and fees may not reflect current airline policies.
+
+    Attributes:
+        code: Airline code used in generated options.
+        name: Display name of the airline.
+        alliance: Alliance or low-cost carrier classification.
+        regions: Approximate regions served by the simulated carrier.
+        hubs: Airport codes used to generate simulated routes.
+        is_lcc: Whether to apply low-cost carrier assumptions.
+        price_factor: Dimensionless multiplier for simulated fares.
+        bag_fee_usd: Estimated fee per checked bag in US dollars.
+
+    Examples:
+        >>> from backend.app.providers.pricing_engine import CarrierProfile
+        >>> carrier = CarrierProfile(
+        ...     code="XX", name="Example Air", alliance="Non-Aligned",
+        ...     regions=("NA",), hubs=("SFO",), is_lcc=False,
+        ...     price_factor=1.0, bag_fee_usd=40.0,
+        ... )
+        >>> carrier.hubs
+        ('SFO',)
     """
 
     code: str
@@ -49,13 +67,9 @@ class CarrierProfile:
     bag_fee_usd: float
 
 
-# Provenance:
-# - IATA codes, carrier names, and alliance memberships (`Star Alliance`, `Oneworld`, `SkyTeam`, `LCC`)
-#   reflect published airline alliance memberships and major global carrier hubs as of 2026.
-# - `bag_fee_usd` reflects approximate standard 1st checked bag fees (USD) on basic/standard economy fares
-#   as of 2025-2026 for fallback estimation when live fare brand baggage data is not returned.
-# - `regions`, `hubs`, and `price_factor` are synthetic parameters used strictly for offline mock flight
-#   generation in `RealisticPricingProvider` and should NOT be used when live Google Flights data is returned.
+# Carrier names, codes, and classifications are manually maintained and can
+# become outdated. Bag fees are estimates in USD. Regions, hubs, and price
+# factors are synthetic parameters used only to generate test flights.
 CARRIERS: tuple[CarrierProfile, ...] = (
     # Star Alliance
     CarrierProfile(
@@ -163,7 +177,36 @@ def _deterministic_noise(seed_str: str) -> float:
 
 
 def estimate_ticket_fare(legs: list[FlightLegOption], ticket_type: TicketType) -> FareEstimate:
-    """Estimate a ticket's base fare from candidate-leg fares; this does not query a ticketing provider."""
+    """Estimate a ticket's base fare from candidate-leg fares.
+
+    A one-way ticket or a single leg uses the sum of one-way fares. For
+    multiple legs, the estimate uses round-trip half-fares only when no leg
+    is low-cost and the legs share a recognized alliance or their nonblank
+    carrier codes identify one carrier. Otherwise, it sums one-way fares.
+    A multi-city estimate with at least three eligible legs adds 6%.
+
+    Args:
+        legs: Candidate legs covered by the proposed ticket, in travel order.
+        ticket_type: Type of the proposed ticket.
+
+    Returns:
+        An estimated base fare in USD and the assumptions used. Baggage is
+        excluded; ticket availability, combinability, and price are not verified.
+
+    Raises:
+        ValueError: If no legs are provided.
+
+    Examples:
+        >>> from datetime import date
+        >>> from backend.app.models.queries import LegSearch
+        >>> from backend.app.models.schemas import ConcreteCabinClass, TicketType
+        >>> from backend.app.providers.pricing_engine import RealisticPricingProvider, estimate_ticket_fare
+        >>> query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+        >>> leg = RealisticPricingProvider().search(query).options[0]
+        >>> fare = estimate_ticket_fare([leg], TicketType.ONE_WAY)
+        >>> fare.provenance.value, fare.amount_usd == leg.one_way_base_fare_usd
+        ('estimated', True)
+    """
     if not legs:
         raise ValueError("A fare estimate requires at least one flight leg.")
 
@@ -199,12 +242,36 @@ def estimate_ticket_fare(legs: list[FlightLegOption], ticket_type: TicketType) -
 
 
 class RealisticPricingProvider(FlightSearchProvider):
-    """Generates realistic, deterministic flight options modeling GDS + LCC market dynamics."""
+    """Generate synthetic flight options for testing.
+
+    With the same query and airport data, generated options are deterministic.
+    Schedules, flight numbers, fares, and baggage details are estimates and
+    are not bookable. The composite provider exposes this simulator only in
+    offline mode when ``FARESPLIT_TESTING=1``.
+
+    Examples:
+        >>> from datetime import date
+        >>> from backend.app.models.queries import LegSearch
+        >>> from backend.app.models.schemas import ConcreteCabinClass
+        >>> from backend.app.providers.pricing_engine import RealisticPricingProvider
+        >>> provider = RealisticPricingProvider()
+        >>> query = LegSearch.single("SFO", "LHR", date(2026, 11, 10), ConcreteCabinClass.ECONOMY)
+        >>> result = provider.search(query)
+        >>> result.status.value, result.options[0].provider
+        ('complete', 'pricing_engine')
+    """
 
     def is_simulation(self) -> bool:
+        """Return true so cache wrappers do not persist simulated options."""
         return True
 
     def search(self, query: LegSearch) -> SearchResult:
+        """Generate options for each origin and destination pair.
+
+        Pairs with identical endpoints produce no options. Results are
+        concatenated in pair order and sorted by fare and duration within
+        each pair. A complete result may be empty.
+        """
         results: list[FlightLegOption] = []
         for origin in query.origins:
             for destination in query.destinations:
@@ -218,6 +285,11 @@ class RealisticPricingProvider(FlightSearchProvider):
         departure_date: date,
         cabin: ConcreteCabinClass,
     ) -> list[FlightLegOption]:
+        """Generate up to seven synthetic options for one airport pair.
+
+        Carrier profiles, airport metadata, estimated distances, and the
+        departure date determine the candidate routes and fare assumptions.
+        """
         orig = origin.upper()
         dest = destination.upper()
         if orig == dest:

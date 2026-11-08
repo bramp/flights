@@ -1,4 +1,9 @@
-"""Record and replay raw flight-provider responses without network access."""
+"""Save raw flight-provider responses for offline investigation and replay.
+
+Recordings are gzip-compressed JSON files in ``data/cache/provider-responses``
+relative to the current working directory. They contain unredacted input and
+must be handled as potentially sensitive local data.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,42 @@ def record_provider_response(
     *,
     parse_error: BaseException | None = None,
 ) -> Path | None:
-    """Save a provider body on parse failure or when recording is enabled."""
+    """Save a provider response on parse failure or when recording is enabled.
+
+    Record whenever ``parse_error`` is supplied. Otherwise, record only when
+    ``FARESPLIT_RECORD_PROVIDER_RESPONSES=1``. The supplied query and body are
+    stored as given, without redaction. Do not include credentials in the
+    query, and protect the response body and recording file as needed.
+
+    Args:
+        provider: Provider identifier. Replay supports ``fast_flights`` and
+            ``serpapi``.
+        query: Search details needed for replay, including origin, destination,
+            ISO departure date, and cabin.
+        body: Raw provider response text.
+        parse_error: Optional parser failure. Only its class name is stored.
+
+    Returns:
+        The path to the saved file, or ``None`` if recording is disabled or
+        an operating-system error prevents the write. Write errors are logged.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> from tempfile import TemporaryDirectory
+        >>> from unittest.mock import patch
+        >>> from backend.app.providers import provider_recordings as recordings
+        >>> query = {
+        ...     "origin": "SFO", "destination": "LHR",
+        ...     "departure_date": "2026-11-10", "cabin": "economy",
+        ... }
+        >>> with TemporaryDirectory() as directory:
+        ...     with patch.object(recordings, "RECORDING_DIR", Path(directory)):
+        ...         path = recordings.record_provider_response(
+        ...             "serpapi", query, "{", parse_error=ValueError("Invalid JSON")
+        ...         )
+        ...         path is not None and path.is_file()
+        True
+    """
     if parse_error is None and os.environ.get("FARESPLIT_RECORD_PROVIDER_RESPONSES") != "1":
         return None
 

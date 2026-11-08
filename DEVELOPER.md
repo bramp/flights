@@ -66,8 +66,11 @@ The server saves compressed raw provider responses after parser failures under
 `data/cache/provider-responses/`. To record successful responses too, set
 `FARESPLIT_RECORD_PROVIDER_RESPONSES=1` in `.env` and restart the server. These
 local recordings are gitignored and contain the provider response and search
-details, but not request credentials. Replay the saved responses without network
-access with `uv run python -m backend.app.providers.provider_recordings`.
+details without redaction. The live providers omit their request keys from the
+recorded search details, but response bodies may contain sensitive data. Handle
+recordings accordingly. Replay saved responses without network access with
+`uv run python -m backend.app.providers.replay_provider_recordings`. Pass a
+directory as an argument to replay recordings from another location.
 
 Use `npm run test:ux:ui` for the interactive test runner. For a fresh CI machine,
 install the browser and OS dependencies with `npx playwright install --with-deps chromium`
@@ -129,7 +132,9 @@ flights/
 │       ├── providers/
 │       │   ├── base.py              # Abstract FlightSearchProvider + CachedFlightProvider wrapper
 │       │   ├── google_flights.py    # Live Google Flights / SerpApi parser & composite provider
-│       │   └── pricing_engine.py    # Deterministic test-only flight and fare simulation
+│       │   ├── pricing_engine.py    # Test-only flight simulation & ticket fare estimates
+│       │   ├── provider_recordings.py # Save raw provider responses for investigation
+│       │   └── replay_provider_recordings.py # Replay recorded responses without network access
 │       ├── solver/
 │       │   ├── cabin.py             # Per-leg and duration-threshold cabin class resolver
 │       │   ├── route_dag.py         # Date-window & flexible city-order schedule generator
