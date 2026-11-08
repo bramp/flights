@@ -13,3 +13,17 @@ See [DEVELOPER.md](DEVELOPER.md) for the directory structure and development com
    - Never run `git add .` — always stage explicit files relevant to the change.
    - Do not commit unless explicitly requested by the user.
 6. **Verification & Formatting:** Always run `uv run ruff format .`, `uv run ruff check .`, `node --check backend/app/static/app.js`, and `uv run pytest` after making code changes (also enforced automatically via `.pre-commit-config.yaml`).
+
+## Documentation Style
+- Follow PEP 257 docstring conventions and use Google-style sections where useful.
+- Write clear technical English inspired by ASD-STE100; do not claim formal compliance. Prefer short sentences, active voice, and consistent terminology. Avoid idioms and ambiguous pronouns.
+- Document public modules, classes, and functions. Document private helpers when their behavior or constraints are not obvious.
+- Start function docstrings with an imperative summary ending in a period, such as `Return the cheapest valid ticket partition.` Separate additional details from the summary with a blank line.
+- Add `Args`, `Returns`, `Yields`, and `Raises` sections only when applicable. Explain meaning and constraints; do not repeat type annotations.
+- Document contracts such as units, time zones, boundary inclusivity, ordering, mutation, side effects, and expected exceptions.
+- For solver code, explain feasibility constraints, assumptions, pruning rules, and whether results are exact or approximate.
+- Use established domain terms consistently. Distinguish flight segments, itinerary legs, tickets, and ticket partitions.
+- For Pydantic models, use `Field` descriptions for externally visible field semantics and constraints so API documentation includes them.
+- Use inline comments for non-obvious reasoning, not narration. Keep implementation details out of public API contracts.
+- Update affected docstrings and user or developer documentation when behavior changes. Keep examples deterministic and testable.
+- Apply these rules to new or modified code; avoid unrelated documentation-only rewrites.
