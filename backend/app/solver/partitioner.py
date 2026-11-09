@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from backend.app.data.airlines import MAJOR_ALLIANCES
 from backend.app.models.queries import LegSearch
 from backend.app.models.schemas import (
     BookedTicket,
@@ -34,8 +35,6 @@ from backend.app.solver.cabin import (
 from backend.app.solver.hub_splitter import evaluate_hub_split_candidates
 from backend.app.solver.pareto import compute_effective_score
 from backend.app.solver.route_dag import CandidateSchedule, PlannedLegSpec
-
-MAJOR_ALLIANCES = ("Star Alliance", "Oneworld", "SkyTeam")
 
 
 def _compute_baggage_fee(leg: FlightLegOption, request: TripRequest) -> float:

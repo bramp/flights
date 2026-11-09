@@ -24,6 +24,7 @@ from fast_flights.types import SeatType, TripType
 from primp import PrimpError
 
 from backend.app.cache.sqlite_cache import FlightCache
+from backend.app.data.airlines import AIRLINES, LCC, NON_ALIGNED
 from backend.app.data.airports import (
     record_observed_duration,
     register_discovered_airport,
@@ -39,8 +40,9 @@ from backend.app.models.schemas import (
     TicketType,
 )
 from backend.app.providers.base import FlightSearchProvider
-from backend.app.providers.pricing_engine import CARRIERS, RealisticPricingProvider
+from backend.app.providers.pricing_engine import RealisticPricingProvider
 from backend.app.providers.provider_recordings import record_provider_response
+from backend.app.solver.cabin import CABIN_RANK
 
 load_dotenv()
 
@@ -50,12 +52,6 @@ _SEAT_TYPE_MAP: dict[ConcreteCabinClass, SeatType] = {
     ConcreteCabinClass.PREMIUM_ECONOMY: "premium-economy",
     ConcreteCabinClass.BUSINESS: "business",
     ConcreteCabinClass.FIRST: "first",
-}
-_CABIN_ORDER: dict[ConcreteCabinClass, int] = {
-    ConcreteCabinClass.ECONOMY: 1,
-    ConcreteCabinClass.PREMIUM_ECONOMY: 2,
-    ConcreteCabinClass.BUSINESS: 3,
-    ConcreteCabinClass.FIRST: 4,
 }
 
 
@@ -164,7 +160,7 @@ def build_google_flights_url(
     trip_str: Literal["one-way", "round-trip", "multi-city"] = (
         "one-way" if len(legs) == 1 else ("round-trip" if is_exact_round_trip else "multi-city")
     )
-    top_cabin = max((leg.cabin for leg in legs), key=lambda c: _CABIN_ORDER[c], default=ConcreteCabinClass.ECONOMY)
+    top_cabin = max((leg.cabin for leg in legs), key=lambda c: CABIN_RANK[c], default=ConcreteCabinClass.ECONOMY)
     seat_str: SeatType = _SEAT_TYPE_MAP[top_cabin]
     trip_arg: TripType = trip_str
 
@@ -181,87 +177,11 @@ def build_google_flights_url(
     return q.url()
 
 
-# Static carrier metadata used to supplement live responses. Bag fees are estimates.
-AIRLINE_METADATA_BY_CODE: dict[str, tuple[str, bool, float]] = {
-    c.code: (c.alliance, c.is_lcc, c.bag_fee_usd) for c in CARRIERS
-}
-AIRLINE_METADATA_BY_NAME: dict[str, tuple[str, str, bool, float]] = {
-    c.name.lower(): (c.code, c.alliance, c.is_lcc, c.bag_fee_usd) for c in CARRIERS
-}
-
-# Manually maintained alliance and low-cost carrier rosters for carriers not
-# listed in CARRIERS. Classifications can become outdated.
-_ALLIANCE_ROSTERS: dict[str, tuple[str, ...]] = {
-    "Star Alliance": (
-        "A3",
-        "AC",
-        "AI",
-        "AV",
-        "BR",
-        "CA",
-        "CM",
-        "ET",
-        "EW",
-        "LH",
-        "LO",
-        "LX",
-        "MS",
-        "NH",
-        "NZ",
-        "OS",
-        "OU",
-        "OZ",
-        "SN",
-        "SQ",
-        "TG",
-        "TK",
-        "TP",
-        "UA",
-        "ZH",
-    ),
-    "Oneworld": (
-        "AA",
-        "AS",
-        "AT",
-        "AY",
-        "BA",
-        "CX",
-        "EI",
-        "FJ",
-        "IB",
-        "JL",
-        "MH",
-        "QF",
-        "QR",
-        "RJ",
-        "UL",
-        "WY",
-    ),
-    "SkyTeam": (
-        "AF",
-        "AM",
-        "AR",
-        "AZ",
-        "CI",
-        "DL",
-        "GA",
-        "KE",
-        "KL",
-        "KQ",
-        "ME",
-        "MU",
-        "RO",
-        "SK",
-        "SV",
-        "UX",
-        "VN",
-        "VS",
-    ),
-    "LCC": ("U2", "FR", "W6", "VY", "WN", "B6", "NK", "F9", "ZG", "AK", "TR", "GQ", "DY"),
-}
-ALLIANCE_BY_IATA_CODE: dict[str, str] = {
-    code: alliance for alliance, codes in _ALLIANCE_ROSTERS.items() for code in codes
-}
+# Fallback checked-bag fee estimates (USD) for carriers without a fee in airlines.json.
+_DEFAULT_LCC_BAG_FEE_USD = 50.0
+_DEFAULT_BAG_FEE_USD = 40.0
+_UNKNOWN_CARRIER_BAG_FEE_USD = 45.0
+_NAMED_AIRLINES = [(a.name.lower(), a) for a in AIRLINES.values() if a.name]
 
 # Dynamically populated from Google Flights response metadata (e.g. ResultList.metadata.airlines and SerpApi flight_number)
 DISCOVERED_AIRLINE_CODES_BY_NAME: dict[str, str] = {}
@@ -279,10 +199,17 @@ def register_discovered_airline(code: str, name: str) -> None:
         DISCOVERED_AIRLINE_CODES_BY_NAME[clean_name] = clean_code
 
 
+def _bag_fee(code: str) -> float:
+    airline = AIRLINES.get(code)
+    if airline is not None and airline.bag_fee_usd is not None:
+        return airline.bag_fee_usd
+    return _DEFAULT_LCC_BAG_FEE_USD if airline is not None and airline.is_lcc else _DEFAULT_BAG_FEE_USD
+
+
 def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str, str, bool, float]:
     """Resolve carrier metadata from a live response's code or name.
 
-    Prefer static code metadata, then alliance rosters and known or discovered
+    Prefer a code listed in ``airlines.json``, then known or discovered
     names. Unknown carriers use a non-aligned classification and an estimated
     $45 checked-bag fee. When both a code and name are supplied, a valid pair
     is also registered in the process-wide discovered-airline map.
@@ -304,27 +231,21 @@ def resolve_airline_metadata(airline_code: str, airline_name: str) -> tuple[str,
     if not code and lower_name in DISCOVERED_AIRLINE_CODES_BY_NAME:
         code = DISCOVERED_AIRLINE_CODES_BY_NAME[lower_name]
 
-    if code in AIRLINE_METADATA_BY_CODE:
-        alliance, is_lcc, bag_fee = AIRLINE_METADATA_BY_CODE[code]
-        return code, alliance, is_lcc, bag_fee
+    if (airline := AIRLINES.get(code)) is not None:
+        return code, airline.alliance, airline.is_lcc, _bag_fee(code)
 
-    if code in ALLIANCE_BY_IATA_CODE:
-        alliance = ALLIANCE_BY_IATA_CODE[code]
-        is_lcc = alliance == "LCC"
-        return code, alliance, is_lcc, (50.0 if is_lcc else 40.0)
-
-    for known_name, (k_code, alliance, is_lcc, bag_fee) in AIRLINE_METADATA_BY_NAME.items():
+    for known_name, airline in _NAMED_AIRLINES:
         if known_name in lower_name or (lower_name and lower_name in known_name):
-            return (code or k_code), alliance, is_lcc, bag_fee
+            return (code or airline.code), airline.alliance, airline.is_lcc, _bag_fee(airline.code)
 
     for disc_name, disc_code in DISCOVERED_AIRLINE_CODES_BY_NAME.items():
         if disc_name in lower_name or (lower_name and lower_name in disc_name):
-            alliance = ALLIANCE_BY_IATA_CODE.get(disc_code, "Non-Aligned")
-            is_lcc = alliance == "LCC"
-            return (code or disc_code), alliance, is_lcc, (50.0 if is_lcc else 40.0)
+            known = AIRLINES.get(disc_code)
+            alliance = known.alliance if known is not None else NON_ALIGNED
+            return (code or disc_code), alliance, alliance == LCC, _bag_fee(disc_code)
 
     fallback_code = code if len(code) == 2 else (airline_name[:2].upper() if airline_name else "FL")
-    return fallback_code, "Non-Aligned", False, 45.0
+    return fallback_code, NON_ALIGNED, False, _UNKNOWN_CARRIER_BAG_FEE_USD
 
 
 class _LiveQueryBudgetExceeded(Exception):
@@ -820,9 +741,9 @@ class CompositeFlightProvider(FlightSearchProvider):
                 alliances_set = {r[1] for r in resolved_all}
                 if any(r[2] for r in resolved_all):
                     is_lcc = True
-                    alliance = "LCC"
+                    alliance = LCC
                 elif len(alliances_set) > 1:
-                    alliance = "Non-Aligned"
+                    alliance = NON_ALIGNED
             if not is_lcc and cabin in (ConcreteCabinClass.BUSINESS, ConcreteCabinClass.FIRST):
                 bag_fee = 0.0
 

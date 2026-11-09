@@ -11,6 +11,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from backend.app.data.airlines import AIRLINES, MAJOR_ALLIANCES
 from backend.app.data.airports import (
     estimate_nonstop_hours,
     get_airport,
@@ -31,10 +32,10 @@ from backend.app.providers.base import FlightSearchProvider
 class CarrierProfile:
     """Describe reference carrier metadata and synthetic pricing parameters.
 
-    The live adapters use the static carrier code, name, alliance, low-cost
-    flag, and estimated bag fee to enrich responses. Regions, hubs, and price
-    factors are approximations used only to generate simulated options.
-    Carrier metadata and fees may not reflect current airline policies.
+    The code, name, alliance, low-cost flag, and estimated bag fee come from
+    ``airlines.json``. Regions, hubs, and price factors are approximations
+    used only to generate simulated options. Carrier metadata and fees may not
+    reflect current airline policies.
 
     Attributes:
         code: Airline code used in generated options.
@@ -67,96 +68,58 @@ class CarrierProfile:
     bag_fee_usd: float
 
 
-# Carrier names, codes, and classifications are manually maintained and can
-# become outdated. Bag fees are estimates in USD. Regions, hubs, and price
-# factors are synthetic parameters used only to generate test flights.
-CARRIERS: tuple[CarrierProfile, ...] = (
+# Synthetic per-carrier simulation parameters: (regions, hubs, price_factor).
+# Real-world carrier metadata (name, alliance, bag fee) lives in airlines.json.
+_SIMULATION_PARAMS: dict[str, tuple[tuple[str, ...], tuple[str, ...], float]] = {
     # Star Alliance
-    CarrierProfile(
-        "UA",
-        "United Airlines",
-        "Star Alliance",
-        ("NA", "EU", "ASIA", "OC"),
-        ("SFO", "LAX", "EWR", "ORD", "IAD"),
-        False,
-        1.02,
-        40.0,
-    ),
-    CarrierProfile(
-        "LH", "Lufthansa", "Star Alliance", ("EU", "NA", "ASIA", "ME"), ("FRA", "MUC", "ZRH", "VIE"), False, 1.04, 45.0
-    ),
-    CarrierProfile(
-        "NH", "ANA (All Nippon)", "Star Alliance", ("ASIA", "NA", "EU"), ("HND", "NRT", "KIX"), False, 1.05, 35.0
-    ),
-    CarrierProfile(
-        "SQ", "Singapore Airlines", "Star Alliance", ("ASIA", "EU", "NA", "OC"), ("SIN",), False, 1.07, 35.0
-    ),
-    CarrierProfile("BR", "EVA Air", "Star Alliance", ("ASIA", "NA", "EU"), ("TPE",), False, 0.94, 35.0),
-    CarrierProfile("TK", "Turkish Airlines", "Star Alliance", ("EU", "ME", "ASIA", "NA"), ("IST",), False, 0.91, 35.0),
+    "UA": (("NA", "EU", "ASIA", "OC"), ("SFO", "LAX", "EWR", "ORD", "IAD"), 1.02),
+    "LH": (("EU", "NA", "ASIA", "ME"), ("FRA", "MUC", "ZRH", "VIE"), 1.04),
+    "NH": (("ASIA", "NA", "EU"), ("HND", "NRT", "KIX"), 1.05),
+    "SQ": (("ASIA", "EU", "NA", "OC"), ("SIN",), 1.07),
+    "BR": (("ASIA", "NA", "EU"), ("TPE",), 0.94),
+    "TK": (("EU", "ME", "ASIA", "NA"), ("IST",), 0.91),
     # Oneworld
-    CarrierProfile("BA", "British Airways", "Oneworld", ("EU", "NA", "ASIA", "ME"), ("LHR", "LGW"), False, 1.03, 45.0),
-    CarrierProfile(
-        "AA",
-        "American Airlines",
-        "Oneworld",
-        ("NA", "EU", "ASIA"),
-        ("JFK", "DFW", "MIA", "LAX", "ORD"),
-        False,
-        1.00,
-        40.0,
-    ),
-    CarrierProfile("JL", "Japan Airlines", "Oneworld", ("ASIA", "NA", "EU"), ("HND", "NRT", "KIX"), False, 1.04, 35.0),
-    CarrierProfile("CX", "Cathay Pacific", "Oneworld", ("ASIA", "NA", "EU", "OC"), ("HKG",), False, 0.97, 35.0),
-    CarrierProfile("QR", "Qatar Airways", "Oneworld", ("ME", "EU", "ASIA", "NA", "OC"), ("DOH",), False, 0.96, 35.0),
-    CarrierProfile("IB", "Iberia", "Oneworld", ("EU", "NA"), ("MAD", "BCN"), False, 0.95, 40.0),
+    "BA": (("EU", "NA", "ASIA", "ME"), ("LHR", "LGW"), 1.03),
+    "AA": (("NA", "EU", "ASIA"), ("JFK", "DFW", "MIA", "LAX", "ORD"), 1.0),
+    "JL": (("ASIA", "NA", "EU"), ("HND", "NRT", "KIX"), 1.04),
+    "CX": (("ASIA", "NA", "EU", "OC"), ("HKG",), 0.97),
+    "QR": (("ME", "EU", "ASIA", "NA", "OC"), ("DOH",), 0.96),
+    "IB": (("EU", "NA"), ("MAD", "BCN"), 0.95),
     # SkyTeam
-    CarrierProfile(
-        "DL", "Delta Air Lines", "SkyTeam", ("NA", "EU", "ASIA"), ("JFK", "LAX", "SEA", "BOS"), False, 1.03, 40.0
-    ),
-    CarrierProfile("AF", "Air France", "SkyTeam", ("EU", "NA", "ASIA", "ME"), ("CDG", "ORY"), False, 1.01, 45.0),
-    CarrierProfile("KL", "KLM", "SkyTeam", ("EU", "NA", "ASIA"), ("AMS",), False, 1.00, 45.0),
-    CarrierProfile("KE", "Korean Air", "SkyTeam", ("ASIA", "NA", "EU"), ("ICN",), False, 0.98, 35.0),
-    CarrierProfile("CI", "China Airlines", "SkyTeam", ("ASIA", "NA", "EU"), ("TPE",), False, 0.92, 35.0),
+    "DL": (("NA", "EU", "ASIA"), ("JFK", "LAX", "SEA", "BOS"), 1.03),
+    "AF": (("EU", "NA", "ASIA", "ME"), ("CDG", "ORY"), 1.01),
+    "KL": (("EU", "NA", "ASIA"), ("AMS",), 1.0),
+    "KE": (("ASIA", "NA", "EU"), ("ICN",), 0.98),
+    "CI": (("ASIA", "NA", "EU"), ("TPE",), 0.92),
     # Low-Cost & Point-to-Point Carriers
-    CarrierProfile(
-        "U2",
-        "easyJet",
-        "LCC",
-        ("EU",),
-        ("LGW", "LTN", "CDG", "ORY", "MXP", "AMS", "BER", "BCN", "FCO"),
-        True,
-        0.58,
-        55.0,
-    ),
-    CarrierProfile(
-        "FR",
-        "Ryanair",
-        "LCC",
-        ("EU",),
-        ("STN", "DUB", "BGY", "CIA", "BER", "MAD", "BCN", "LIS", "VIE", "BUD"),
-        True,
-        0.52,
-        60.0,
-    ),
-    CarrierProfile("WN", "Southwest", "LCC", ("NA",), ("OAK", "SJC", "BUR", "MDW", "BWI", "FLL"), True, 0.72, 0.0),
-    CarrierProfile("B6", "JetBlue", "LCC", ("NA", "EU"), ("JFK", "BOS", "FLL", "LHR", "CDG", "AMS"), True, 0.78, 45.0),
-    CarrierProfile(
-        "ZG",
-        "ZIPAIR Tokyo",
-        "LCC",
-        ("ASIA", "NA"),
-        ("NRT", "SFO", "LAX", "SJC", "ICN", "BKK", "SIN", "MNL"),
-        True,
-        0.64,
-        65.0,
-    ),
-    CarrierProfile(
-        "AK", "AirAsia", "LCC", ("ASIA",), ("KUL", "BKK", "DMK", "SIN", "TPE", "HKG", "MNL"), True, 0.55, 50.0
-    ),
-    CarrierProfile(
-        "TR", "Scoot", "LCC", ("ASIA", "OC"), ("SIN", "TPE", "BKK", "ICN", "NRT", "KIX", "SYD", "MEL"), True, 0.59, 55.0
-    ),
-)
+    "U2": (("EU",), ("LGW", "LTN", "CDG", "ORY", "MXP", "AMS", "BER", "BCN", "FCO"), 0.58),
+    "FR": (("EU",), ("STN", "DUB", "BGY", "CIA", "BER", "MAD", "BCN", "LIS", "VIE", "BUD"), 0.52),
+    "WN": (("NA",), ("OAK", "SJC", "BUR", "MDW", "BWI", "FLL"), 0.72),
+    "B6": (("NA", "EU"), ("JFK", "BOS", "FLL", "LHR", "CDG", "AMS"), 0.78),
+    "ZG": (("ASIA", "NA"), ("NRT", "SFO", "LAX", "SJC", "ICN", "BKK", "SIN", "MNL"), 0.64),
+    "AK": (("ASIA",), ("KUL", "BKK", "DMK", "SIN", "TPE", "HKG", "MNL"), 0.55),
+    "TR": (("ASIA", "OC"), ("SIN", "TPE", "BKK", "ICN", "NRT", "KIX", "SYD", "MEL"), 0.59),
+}
+
+
+def _build_carriers() -> tuple[CarrierProfile, ...]:
+    carriers: list[CarrierProfile] = []
+    for code, (regions, hubs, price_factor) in _SIMULATION_PARAMS.items():
+        airline = AIRLINES.get(code)
+        if airline is None or airline.name is None or airline.bag_fee_usd is None:
+            raise ValueError(f"Simulated carrier {code} needs a name and bag fee in airlines.json")
+        carriers.append(
+            CarrierProfile(
+                code, airline.name, airline.alliance, regions, hubs, airline.is_lcc, price_factor, airline.bag_fee_usd
+            )
+        )
+    missing = [a for a in MAJOR_ALLIANCES if not any(c.alliance == a for c in carriers)]
+    if missing:
+        raise ValueError(f"No simulated carriers for alliances: {', '.join(missing)}")
+    return tuple(carriers)
+
+
+CARRIERS: tuple[CarrierProfile, ...] = _build_carriers()
 
 CABIN_MULTIPLIERS: dict[ConcreteCabinClass, tuple[float, float]] = {
     # Format: one_way_multiplier and round_trip_half_multiplier.
@@ -352,8 +315,7 @@ class RealisticPricingProvider(FlightSearchProvider):
         # Guarantee at least one carrier from each major alliance so multi-ticket vs single-ticket can be compared
         alliances_present = {c.alliance for c, _, _ in candidates if not c.is_lcc}
         fallback_by_alliance = {
-            alliance_name: next(c for c in CARRIERS if c.alliance == alliance_name)
-            for alliance_name in ("Star Alliance", "Oneworld", "SkyTeam")
+            alliance_name: next(c for c in CARRIERS if c.alliance == alliance_name) for alliance_name in MAJOR_ALLIANCES
         }
         for alliance_name, fb_carrier in fallback_by_alliance.items():
             if alliance_name not in alliances_present:

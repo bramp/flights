@@ -136,6 +136,8 @@ flights/
 │       ├── models/
 │       │   └── schemas.py           # Pydantic v2 models for inputs, flights, tickets, results
 │       ├── data/
+│       │   ├── airlines.json        # Editable airline codes, names, alliances & bag fee estimates
+│       │   ├── airlines.py          # Airline loading & validation (defines MAJOR_ALLIANCES)
 │       │   ├── airports.json        # Editable airport records, coordinates & nearby alternatives
 │       │   └── airports.py          # Airport loading, metro areas, search & distance helpers
 │       ├── cache/
@@ -170,6 +172,7 @@ flights/
 ## Key Implementation Details
 
 - **Airport Directory:** Edit `backend/app/data/airports.json` to add or update airports. Each record contains `code` (unique IATA code), `name`, `city`, `country` (two-letter code), `region` (`NA`, `EU`, `ASIA`, `ME`, `OC`, or `SA`), `lat`, `lon`, `metro_code`, `is_major_hub`, and `nearby_codes` (an array of airport codes). Airports in the same metropolitan area share a `metro_code`; nearby alternatives may belong to different metros. Restart the server after editing the file. Display-specific country names, city distances, and metro groupings remain in `airports.py`.
+- **Airline Directory:** Edit `backend/app/data/airlines.json` to add or update airlines. Each record contains `code` (unique two-character IATA code), `alliance` (`Star Alliance`, `Oneworld`, `SkyTeam`, `LCC`, or `Non-Aligned`), and optionally `name` (used to match carriers by name in live responses) and `bag_fee_usd` (estimated fee per checked bag). The loader rejects unknown alliances, duplicate codes, and files that omit any alliance in `MAJOR_ALLIANCES`. Synthetic simulation parameters (regions, hubs, price factors) for test carriers remain in `pricing_engine.py`; each simulated carrier needs a `name` and `bag_fee_usd` in `airlines.json`.
 - **SQLite Caching (`backend/app/cache/sqlite_cache.py`):** Stores complete leg search results in `leg_search_cache` and individual flight legs in `granular_flights` inside `flights_cache.db`. Ticket fare estimates are calculated from candidate-leg fares and are not cached as quotes.
 - **Flight Searches:** Providers and the cache accept a normalized `LegSearch` with ordered origin/destination airport tuples, date, and cabin. Repeated searches are reused within one optimization run, including when force refresh bypasses SQLite. Persistent search entries also include the provider mode and effective transport layover limit. Pre-existing entries without that scope are retained but are not reused.
 - **Search Outcomes:** Providers return a `SearchResult` with options, a `complete`, `partial`, or `failed` status, and explicit issues. Only complete, nonempty live searches are persisted. Fast-Flights and Auto modes search every selected airport pair unless the live-query budget is exhausted. A successful fallback completes the search; recovered provider failures are logged but omitted from user warnings. Programming errors still propagate. Earlier search cache versions are retained but ignored because they did not prove completeness.
