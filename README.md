@@ -40,12 +40,12 @@ Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser.
 
 ### 1. Set Your Overall Trip Window & Global Rules (Top Toolbar)
 At the top of the planner card:
-- **Trip Window (`Start Date → End Date`):** Sets the earliest possible departure date and latest possible return date for the entire trip. These dates define the columns of the interactive date grid below.
+- **Trip Window (`Start Date → End Date`):** Sets the earliest planned departure date and preferred latest departure date for the final leg. A relaxed fallback can exceed the requested window.
 - **City Order:**
   - **Flexible (Respect 📌 Pins):** Keeps any pinned city (`📌`) locked in its position while testing better orderings for unpinned cities.
   - **Fixed Sequence:** Visits cities strictly in the top-to-bottom row order shown.
-  - **Auto-Order All (TSP):** Automatically finds the best geographic/price ordering across all stops.
-- **Baggage (All Flights):** Toggle **🧳 Carry-On** and choose **0, 1, or 2 Checked Bags**. Checked bags automatically add carrier baggage fees on split/LCC tickets and increase the minimum safe self-transfer buffer at intermediate hubs from `4.0h` to `5.5h`.
+  - **Auto-Order All (TSP):** Ranks stop orders by approximate geographic distance, then evaluates a limited sample without preserving pins.
+- **Baggage (All Flights):** Toggle **🧳 Carry-On** and choose **0, 1, or 2 Checked Bags**. Checked bags add estimated baggage fees and increase the assumed self-transfer buffer at intermediate hubs from `4.0h` to `5.5h`.
 - **✨ "Auto" Cabin Rule:** Defines how legs set to `✨ Auto` resolve their cabin class based on flight duration (e.g., *Economy under `6.5` hours, else Business*).
 - **⚙️ Weights & Hub Rules:** Click to expand sliders for **Value of Your Time (`$/hr`)**, **Protected Stop Penalty**, **Self-Transfer Split Penalty**, and toggling **Intermediate Hub Ticket Splitting**.
 
@@ -79,18 +79,22 @@ Between every pair of rows is a full-width **Flight Connector Bar** (`✈️ Fli
 
 ### 4. Compare Ticket Strategies & Inspect Bookings
 Click **🔍 Optimize Flights & Ticket Combinations** (or load one of the presets from the top-right **Load Example Trip…** dropdown):
-1. **Optimal Stay Overlay on the Grid:** The chosen dates for each stop light up in dark blue (`LHR`, `CDG`, `CIA`) directly inside the timeline grid, alongside `✈️ DEP` and `✈️ RET`.
+1. **Recommended Stay Overlay on the Grid:** The chosen dates for each stop light up in dark blue (`LHR`, `CDG`, `CIA`) directly inside the timeline grid, alongside `✈️ DEP` and `✈️ RET`.
 2. **Ticket Strategy Comparison Table:** Compares all 5 ticketing strategies side-by-side:
    - **Anchor Open-Jaw / Round-Trip + Regional One-Ways** *(often cheapest when mixing long-haul Business with short-haul Economy/LCCs)*
    - **2 Nested Multi-Stop Tickets (Outer + Inner)**
-   - **1 Single Multi-City Ticket (1 PNR)** *(baseline with full connection protection)*
-   - **Hub-Split via Gateway Hub** *(virtual interlining with a mandatory 4.0h–5.5h self-transfer buffer)*
+   - **1 Single Multi-City Ticket (1 PNR)** *(baseline assuming protected connections)*
+   - **Hub-Split via Gateway Hub** *(virtual interlining with an assumed 4.0h–5.5h self-transfer buffer)*
    - **All Separate One-Way Tickets**
 3. **Click Any Strategy Row:** Clicking a row in the comparison table updates the **Ticket Breakdown** below it (showing each proposed ticket, flight numbers, cabin tags, estimated fare and bag fees, pricing assumptions, and booking instructions) and updates the highlighted stay dates on the grid above.
 
 Ticket prices are estimates, not verified combined-ticket quotes. The breakdown
 labels each fare as estimated and lists its assumptions; confirm final fares and
 baggage charges with the airline or booking provider before purchasing.
+The solver samples schedules and may relax date windows. Planned stop arrivals
+use the inbound flight's departure date, not its actual arrival date. Hub-split
+scores include an assumed transfer buffer, but the solver does not check the
+actual connection times. Verify all flight dates and connections before booking.
 
 ---
 
@@ -147,5 +151,7 @@ uv run ruff check .
 node --check backend/app/static/app.js
 uv run pytest
 ```
+
+The pytest suite also runs the documentation examples in all backend modules.
 
 Pre-commit hooks are configured in `.pre-commit-config.yaml` (and installed via `uv run pre-commit install`) so every commit automatically formats, lints, checks JS syntax, and runs the test suite.

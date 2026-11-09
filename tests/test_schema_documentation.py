@@ -1,17 +1,8 @@
-"""Verify that schema documentation is runnable and appears in the API."""
+"""Verify that schema descriptions appear in the generated API."""
 
 from __future__ import annotations
 
-import doctest
-
 from backend.app.main import create_app
-from backend.app.models import schemas
-
-
-def test_schema_documentation_examples() -> None:
-    result = doctest.testmod(schemas)
-    assert result.attempted > 0
-    assert result.failed == 0
 
 
 def test_openapi_documents_schema_fields() -> None:

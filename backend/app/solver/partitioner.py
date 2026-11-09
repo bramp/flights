@@ -1,4 +1,10 @@
-"""Set-partitioning solver for multi-city flight itineraries."""
+"""Compare five heuristic ticket partitions for a candidate schedule.
+
+The strategies select from candidate legs and estimate ticket fares rather
+than exhaustively solving every partition or verifying combined-ticket
+prices. Each proposed ticket contains only legs the traveler is to fly.
+Live flight searches must use a cache-backed provider.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +39,11 @@ MAJOR_ALLIANCES = ("Star Alliance", "Oneworld", "SkyTeam")
 
 
 def _compute_baggage_fee(leg: FlightLegOption, request: TripRequest) -> float:
+    """Estimate a leg's baggage fees in USD, rounded to two decimals.
+
+    Add the candidate's per-bag fee for each checked bag and $35 when a
+    requested carry-on is not included.
+    """
     fee = 0.0
     if request.baggage.checked_bags > 0:
         fee += leg.bag_fee_per_checked_bag_usd * request.baggage.checked_bags
@@ -47,8 +58,12 @@ def _fetch_all_airport_pair_options(
     provider: FlightSearchProvider,
     cabin_override: ConcreteCabinClass | None = None,
 ) -> list[FlightLegOption]:
-    """Query allowed (origin_airport, destination_airport) pairs for a planned leg,
-    using batched search when supported by the provider, and filter by the leg's resolved max_stops.
+    """Search the allowed airports and apply preferred stop and layover limits.
+
+    Use the requested cabin or an override and pass all airport choices in
+    one leg search. The filters can relax the requested limits when no option
+    meets them. Return no options for empty airport lists or a single identical
+    origin and destination.
     """
     origs = leg_spec.origin_airports
     dests = leg_spec.destination_airports
@@ -69,18 +84,18 @@ def _fetch_all_airport_pair_options(
 
 
 def _slug(label: str) -> str:
+    """Normalize a carrier group label for use in identifiers."""
     return "".join(ch.lower() if ch.isalnum() else "-" for ch in label).strip("-") or "group"
 
 
 def _candidate_carrier_groups(
     options_by_slice: list[list[FlightLegOption]],
 ) -> list[tuple[str, list[list[FlightLegOption]]]]:
-    """Return candidate (group_label, filtered_options_per_slice) groups that can be booked
-    onto a single multi-slice ticket:
-    1. Major airline alliances (Star Alliance, Oneworld, SkyTeam) present across all slices.
-    2. Individual non-aligned, non-LCC carriers (by airline code) present across all slices,
-       so airlines returned by Google Flights can form Round-Trip, Open-Jaw, Nested, or
-       Multi-City tickets without requiring hardcoded alliance tables.
+    """Group candidate slices by a shared alliance or non-aligned carrier.
+
+    Require a non-low-cost option in every slice. Consider the three major
+    alliances and non-aligned carrier codes found in the first slice. These
+    groups are pricing heuristics, not proof that a combined ticket exists.
     """
     if not options_by_slice or any(not opts for opts in options_by_slice):
         return []
@@ -112,6 +127,11 @@ def _leg_generalized_cost(
     request: TripRequest,
     use_rt_half_fare: bool = False,
 ) -> float:
+    """Rank one leg using its selected fare, baggage, time, and stop costs.
+
+    This per-leg estimate excludes separate-ticket and self-transfer penalties
+    that are applied when the full itinerary is scored.
+    """
     fare = leg.round_trip_half_fare_usd if use_rt_half_fare else leg.one_way_base_fare_usd
     bag = _compute_baggage_fee(leg, request)
     time_cost = leg.duration_hours * request.weights.value_of_time_per_hour
@@ -123,7 +143,11 @@ def _build_updated_visits(
     schedule: CandidateSchedule,
     chosen_legs: list[FlightLegOption],
 ) -> list[ScheduledStopVisit]:
-    """Update each stop's actual arrival and departure airport based on the selected flights."""
+    """Copy visits with arrival and departure airports from the chosen legs.
+
+    For a hub-split first leg, skip the first sub-leg when aligning flights
+    with city visits. Planned visit dates are not updated.
+    """
     # When Leg 0 is hub-split into [Origin->Hub, Hub->Stop1], collapse the first two legs
     # so index 0 corresponds to the leg arriving at Stop 1.
     effective_legs = chosen_legs[1:] if len(chosen_legs) == len(schedule.legs) + 1 else chosen_legs
@@ -156,6 +180,12 @@ def _assemble_itinerary(
     min_buffer_hours: float | None = None,
     explanation_bullets: list[str] | None = None,
 ) -> EvaluatedItinerary:
+    """Assemble ticket estimates, travel totals, and an itinerary score.
+
+    Populate missing search URLs without fetching a quote. Add any assumed
+    self-transfer buffer to travel time; do not validate actual connection
+    times. At least one selected leg is required.
+    """
     tickets = [
         t
         if t.google_flights_url
@@ -227,10 +257,17 @@ def evaluate_single_multi_city_ticket(
     request: TripRequest,
     provider: FlightSearchProvider,
 ) -> EvaluatedItinerary | None:
-    """Strategy 1: Book all trip legs on a single Multi-City PNR within one airline alliance.
-    Note: Single-ticket multi-city itineraries require a consistent alliance and often price
-    at the highest cabin class requested across the long-haul/regional combination, or incur a
-    multi-slice combinability surcharge if mixing cabins/regions.
+    """Evaluate one proposed multi-city ticket covering all schedule legs.
+
+    Search every leg in the highest requested cabin, then compare shared
+    alliance or non-aligned carrier groups. Choose each group's legs using
+    estimated half-round-trip costs and return its lowest-scoring proposal.
+    The baggage estimate is 75% of the summed per-leg baggage fees. The
+    combined fare, baggage allowance, and ticket availability are not verified.
+
+    Returns:
+        The best evaluated single-ticket proposal, or ``None`` if no group
+        has an option for every leg.
     """
     desired_cabins = [
         resolve_leg_cabin(
@@ -315,7 +352,15 @@ def evaluate_all_one_ways(
     request: TripRequest,
     provider: FlightSearchProvider,
 ) -> EvaluatedItinerary | None:
-    """Strategy 2: Book each leg as an independent One-Way ticket in its exact target cabin."""
+    """Evaluate one separate one-way ticket per planned leg.
+
+    Resolve each leg's cabin independently and choose its lowest generalized
+    one-way cost. The choices are made per leg rather than by an exhaustive
+    search of combined itineraries.
+
+    Returns:
+        The evaluated proposal, or ``None`` if any leg has no options.
+    """
     chosen_legs: list[FlightLegOption] = []
     tickets: list[BookedTicket] = []
 
@@ -377,9 +422,16 @@ def evaluate_open_jaw_plus_regional(
     request: TripRequest,
     provider: FlightSearchProvider,
 ) -> EvaluatedItinerary | None:
-    """Strategy 3: Combine the outbound anchor leg (Leg 0) and return anchor leg (Leg N-1)
-    into a single Open-Jaw or Round-Trip ticket on one alliance, and book middle regional hops
-    as separate One-Way tickets in their respective cabins.
+    """Evaluate an outer ticket plus separate one-way tickets for middle legs.
+
+    Group the first and last legs by a shared alliance or non-aligned carrier.
+    Use a round-trip ticket only for exact reverse airport pairs; otherwise
+    use an open-jaw ticket. Select middle legs independently in their
+    requested cabins. Fares and ticket combinability are estimates.
+
+    Returns:
+        The best evaluated proposal, or ``None`` when the required options
+        or a shared outer carrier group are unavailable.
     """
     if len(schedule.legs) < 2:
         return None
@@ -492,8 +544,18 @@ def evaluate_nested_round_trips(
     request: TripRequest,
     provider: FlightSearchProvider,
 ) -> EvaluatedItinerary | None:
-    """Strategy 4: Anchor Round-Trip between Origin and Stop 1's hub, plus a nested regional
-    Open-Jaw/Multi-City ticket covering the inner stops.
+    """Evaluate an outer ticket and one nested ticket for the inner legs.
+
+    The outer ticket is a round trip for exact reverse airport pairs and an
+    open jaw otherwise. The inner ticket is multi-city for multiple legs or
+    one-way for a single leg. Both groups require compatible candidate
+    carriers. The inner fare includes a 6% discount assumption, and its
+    baggage estimate is 85% of summed per-leg fees. Fares and ticket
+    combinability are not verified.
+
+    Returns:
+        The best evaluated proposal, or ``None`` for fewer than three legs or
+        when the required options or carrier groups are unavailable.
     """
     if len(schedule.legs) < 3:
         return None
@@ -607,7 +669,11 @@ def evaluate_hub_split_strategy(
     request: TripRequest,
     provider: FlightSearchProvider,
 ) -> EvaluatedItinerary | None:
-    """Strategy 5: Delegate intermediate hub-splitting evaluation to hub_splitter module."""
+    """Evaluate a first-leg hub split using the shared partition helpers.
+
+    The hub strategy assumes a self-transfer buffer but does not check the
+    actual connection times. Return ``None`` when no split is evaluated.
+    """
     return evaluate_hub_split_candidates(
         schedule=schedule,
         request=request,
@@ -626,7 +692,50 @@ def evaluate_all_partitions_for_schedule(
     on_strategy_start: Callable[[str], None] | None = None,
     on_strategy_done: Callable[[str], None] | None = None,
 ) -> list[EvaluatedItinerary]:
-    """Evaluate all ticket partitioning strategies on a candidate schedule and compute relative savings."""
+    """Evaluate the five ticket strategies for one candidate schedule.
+
+    Run the strategies in their defined order and retain at most one result
+    from each. Calculate price savings relative to the single-ticket and
+    all-one-way results when those baselines exist. Results are not sorted by
+    score. The search is heuristic and does not verify ticket prices or every
+    possible partition.
+
+    Args:
+        schedule: Planned city visits and flight legs to evaluate.
+        request: Trip preferences and scoring weights.
+        provider: Flight search provider; wrap live providers in the cache.
+        on_strategy_start: Optional callback invoked before each strategy.
+        on_strategy_done: Optional callback invoked after each strategy.
+
+    Returns:
+        Available itinerary proposals in strategy order. Callback and provider
+        exceptions propagate to the caller.
+
+    Examples:
+        Use a simulated provider and a temporary cache:
+
+        >>> from datetime import date
+        >>> from pathlib import Path
+        >>> from tempfile import TemporaryDirectory
+        >>> from backend.app.cache.sqlite_cache import FlightCache
+        >>> from backend.app.models.schemas import CityStopSpec, OptimizationWeights, StrategyKind, TripRequest
+        >>> from backend.app.providers.base import CachedFlightProvider
+        >>> from backend.app.providers.pricing_engine import RealisticPricingProvider
+        >>> from backend.app.solver.partitioner import evaluate_all_partitions_for_schedule
+        >>> from backend.app.solver.route_dag import generate_candidate_schedules
+        >>> trip = TripRequest(
+        ...     origin_airports=["SFO"], destination_airports=["SFO"],
+        ...     earliest_departure=date(2026, 11, 10), latest_return=date(2026, 11, 16),
+        ...     stops=[CityStopSpec(id="lon", label="London", airports=["LHR"], min_nights=2, max_nights=2)],
+        ...     weights=OptimizationWeights(enable_hub_splitting=False),
+        ... )
+        >>> schedule = generate_candidate_schedules(trip, max_schedules=1)[0]
+        >>> with TemporaryDirectory() as directory:
+        ...     provider = CachedFlightProvider(RealisticPricingProvider(), FlightCache(Path(directory) / "cache.db"))
+        ...     results = evaluate_all_partitions_for_schedule(schedule, trip, provider)
+        ...     any(item.strategy == StrategyKind.ALL_ONE_WAYS for item in results)
+        True
+    """
     results: list[EvaluatedItinerary] = []
 
     strategy_runners: list[

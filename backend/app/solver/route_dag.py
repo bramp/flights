@@ -1,4 +1,10 @@
-"""Schedule and route candidate generator supporting fixed, pinned, and TSP city ordering."""
+"""Generate sampled city orders and date-based schedule candidates.
+
+Despite the module name, this implementation samples representative orders,
+start dates, and stay lengths rather than exhaustively searching a route DAG.
+Planned stop arrivals use the inbound leg's departure date, not its actual
+flight arrival time.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +24,31 @@ from backend.app.models.schemas import (
 
 @dataclass(frozen=True)
 class PlannedLegSpec:
+    """Describe one planned flight leg before candidate flights are selected.
+
+    Attributes:
+        leg_index: Zero-based position in the planned itinerary.
+        origin_airports: Allowed origin airport codes in priority order.
+        destination_airports: Allowed destination codes in priority order.
+        departure_date: Planned departure date.
+        requested_cabin: Cabin preference for the leg, including ``AUTO``.
+        from_label: Display label for the origin.
+        to_label: Display label for the destination.
+        requested_stops: Preferred stop limit, defaulting to ``AUTO``.
+
+    Examples:
+        >>> from datetime import date
+        >>> from backend.app.models.schemas import CabinClass
+        >>> from backend.app.solver.route_dag import PlannedLegSpec
+        >>> leg = PlannedLegSpec(
+        ...     leg_index=0, origin_airports=("SFO",), destination_airports=("LHR",),
+        ...     departure_date=date(2026, 11, 10), requested_cabin=CabinClass.ECONOMY,
+        ...     from_label="San Francisco", to_label="London",
+        ... )
+        >>> leg.requested_stops.value
+        'auto'
+    """
+
     leg_index: int
     origin_airports: tuple[str, ...]
     destination_airports: tuple[str, ...]
@@ -30,6 +61,20 @@ class PlannedLegSpec:
 
 @dataclass(frozen=True)
 class CandidateSchedule:
+    """Group a city order, planned visits, and legs for evaluation.
+
+    The dataclass prevents field reassignment but does not freeze the nested
+    stop and visit models. Dates are planned dates, not verified flight times.
+
+    Attributes:
+        schedule_id: Identifier for the sampled or fallback schedule.
+        ordered_stops: Requested stops in the proposed visit order.
+        stop_visits: Planned arrival and departure dates for each stop.
+        legs: Planned flight legs in travel order, including the final leg.
+        total_route_km: Approximate route distance in kilometers. Generated
+            schedules use each leg's first airport and round to one decimal.
+    """
+
     schedule_id: str
     ordered_stops: tuple[CityStopSpec, ...]
     stop_visits: tuple[ScheduledStopVisit, ...]
@@ -38,7 +83,21 @@ class CandidateSchedule:
 
 
 def generate_city_orders(request: TripRequest) -> list[tuple[CityStopSpec, ...]]:
-    """Generate candidate city visit sequences honoring ordering_mode and fixed_order pins."""
+    """Generate up to four candidate city visit orders.
+
+    Fixed mode retains the input order. Flexible mode retains pinned stops at
+    their input positions; automatic TSP mode permits all stops to move.
+    Permutations that fail a preliminary neighboring date-window check are
+    excluded, then ranked by approximate distance between primary airports.
+    The original order is retained even if it failed that preliminary check.
+    These orders are a sample, not a proof of the best order by fare or time.
+
+    Args:
+        request: Trip stops, ordering mode, and endpoint airports.
+
+    Returns:
+        Candidate stop tuples in the order selected for evaluation.
+    """
     stops = list(request.stops)
     n = len(stops)
     if n <= 1 or request.ordering_mode == "fixed":
@@ -107,7 +166,55 @@ def generate_candidate_schedules(
     request: TripRequest,
     max_schedules: int = 12,
 ) -> list[CandidateSchedule]:
-    """Enumerate valid (city_order, arrival_dates, departure_dates) schedules within trip constraints."""
+    """Generate a bounded sample of date-based candidate schedules.
+
+    For each selected city order, test representative start offsets and
+    minimum, midpoint, or maximum stay profiles. The normal candidates use
+    inclusive trip and stop date bounds. When the total window is shorter
+    than the requested minimum stays, the sampled minimum stays are compressed.
+    Planned stop arrivals use the inbound leg's departure date and do not
+    account for overnight flights.
+
+    If no sampled candidate meets the date checks, return a relaxed fallback.
+    It can violate stop windows and, when there are too few days for one night
+    per stop, can depart on the final leg after ``latest_return``. Callers
+    should surface the fallback and verify the actual flight dates.
+
+    Args:
+        request: Trip dates, stops, airport choices, and ordering preferences.
+        max_schedules: Maximum number of distinct schedules when positive.
+
+    Returns:
+        Schedules in generation order, deduplicated by stop IDs and leg
+        departure dates. A nonpositive limit can still return one schedule.
+
+    Examples:
+        >>> from datetime import date
+        >>> from backend.app.models.schemas import CityStopSpec, TripRequest
+        >>> from backend.app.solver.route_dag import generate_candidate_schedules
+        >>> trip = TripRequest(
+        ...     origin_airports=["SFO"], destination_airports=["SFO"],
+        ...     earliest_departure=date(2026, 11, 10), latest_return=date(2026, 11, 16),
+        ...     stops=[CityStopSpec(id="lon", label="London", airports=["LHR"], min_nights=2, max_nights=2)],
+        ... )
+        >>> schedule = generate_candidate_schedules(trip, max_schedules=1)[0]
+        >>> schedule.legs[0].origin_airports, schedule.stop_visits[0].nights
+        (('SFO',), 2)
+
+        A short window can produce a fallback beyond the requested final date:
+
+        >>> short_trip = TripRequest(
+        ...     origin_airports=["SFO"], destination_airports=["SFO"],
+        ...     earliest_departure=date(2026, 11, 10), latest_return=date(2026, 11, 11),
+        ...     stops=[
+        ...         CityStopSpec(id="lon", label="London", airports=["LHR"], min_nights=1, max_nights=1),
+        ...         CityStopSpec(id="par", label="Paris", airports=["CDG"], min_nights=1, max_nights=1),
+        ...     ],
+        ... )
+        >>> fallback = generate_candidate_schedules(short_trip, max_schedules=1)[0]
+        >>> fallback.schedule_id, fallback.legs[-1].departure_date.isoformat()
+        ('sched-fallback-0', '2026-11-12')
+    """
     orders = generate_city_orders(request)
     candidates: list[CandidateSchedule] = []
 

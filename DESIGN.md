@@ -66,27 +66,38 @@ flowchart TD
 ```
 
 ### Stage 1: Schedule & Route Enumeration
-- Builds a **Time-Expanded Directed Acyclic Graph (DAG)** of valid `(city, arrival_date, departure_date)` states that satisfy all date ranges and min/max stay durations.
-- Prunes infeasible date combinations early.
+- Samples up to four city orders and representative departure dates and stay
+  lengths. It does not exhaustively enumerate all schedules.
+- Checks the sampled date windows, but can return a relaxed fallback when no
+  sample matches. The fallback can exceed the requested final-leg date when
+  the trip window cannot fit one night per stop. Planned stop arrivals use the
+  inbound leg's departure date, not its actual flight arrival date.
 
 ### Stage 2: Candidate Flight Discovery (Search Strategy)
-Querying every multi-city permutation directly is prohibitive due to API rate limits and combinatorial explosion. Instead, we use a **two-tier search**:
-1. **Broad One-Way & Round-Trip Matrix Sweep:**
-   - Fetch cached/calendar fares or daily one-way & round-trip quotes for each candidate `(City_i, City_j, Date)` pair.
-   - Retain the top-$K$ pareto-optimal flights per `(Origin, Dest, Date)` across `(price, duration, stops, alliance)`.
-2. **Targeted Multi-City / Open-Jaw Queries:**
-   - For the most promising date schedules, query priced **Multi-City** and **Open-Jaw** combinations grouped by airline alliance (`Star Alliance`, `Oneworld`, `SkyTeam`) and major carriers.
+The solver searches selected flight legs through the cache-backed provider,
+then compares the returned candidates. Multi-city, round-trip, and open-jaw
+ticket fares are estimated from candidate-leg fares; the solver does not request
+or verify a combined-ticket quote.
 
 ### Stage 3: Ticket Partitioning & Intermediate Hub Splitting
-Given a sequence of $N$ trip legs $L = \{l_1, l_2, \dots, l_N\}$, we optimize both **how legs are grouped into tickets** and **whether any leg is split at an intermediate transit hub**:
+Given a sequence of $N$ trip legs $L = \{l_1, l_2, \dots, l_N\}$, the solver
+compares **how legs are grouped into tickets** and whether the first leg is
+split at an intermediate transit hub:
 
 #### 3.1 Leg-Level Hub Splitting (Virtual Interlining)
-Before or during ticket partitioning, an expensive or poorly-connected leg $A \to B$ can be expanded into $A \to H \to B$ via a candidate transit hub $H$ (selected from a curated matrix of major global/regional hubs along the geographic corridor):
-- **Minimum Self-Transfer Buffer:** Unprotected transfers at $H$ require a configurable safety buffer (e.g., $\ge 4$ hours for same-terminal/schengen, $\ge 5\text{–}6$ hours or overnight for international with customs + baggage re-check).
-- **Hub Anchor Nesting:** A hub $H$ can even act as the turnaround point of a cheap long-haul Round-Trip ticket (e.g., `SFO <-> TYO` RT ticket, while using separate regional tickets `TYO -> TPE -> HKG -> TYO`).
+The first planned leg $A \to B$ can be expanded into $A \to H \to B$ via a
+candidate transit hub $H$. The current strategy proposes a gateway open-jaw
+ticket and a separate continuation from the hub.
+- **Assumed Self-Transfer Buffer:** The score includes 4.0 hours without
+  checked bags or 5.5 hours with them. The solver does not compare the
+  selected flights' actual arrival and departure times; the traveler must
+  verify the connection.
 
 #### 3.2 Ticket Partitioning (Set Partitioning Problem)
-Given the (potentially hub-expanded) sequence of legs, we partition them into disjoint subsets of bookable tickets $T = \{t_1, t_2, \dots, t_k\}$ where $\bigcup t_i = L$:
+Given the (potentially hub-expanded) sequence of legs, the solver compares
+five heuristic ways to group the flown legs into proposed tickets
+$T = \{t_1, t_2, \dots, t_k\}$ where $\bigcup t_i = L$. It does not
+exhaustively enumerate partitions or verify ticket availability:
 - **Strategy A — Single Ticket (All-in-One):**
   - 1 Multi-City ticket covering $(l_1, \dots, l_N)$.
   - Pros: Single booking, protected connections, consistent baggage rules.
@@ -95,22 +106,29 @@ Given the (potentially hub-expanded) sequence of legs, we partition them into di
   - $N$ separate One-Way tickets.
   - Pros: Mix-and-match any airlines/LCCs.
   - Cons: Long-haul one-way fares on full-service carriers are often 70–120% of a round-trip price.
-- **Strategy C — Anchor Ticket + Regional Tickets (Hybrid / Nested / Open-Jaw):**
+- **Strategy C — Anchor Ticket + Regional One-Ways:**
   - Example: Trip is `SFO -> London -> Paris -> Rome -> SFO`.
   - Anchor Ticket (Open-Jaw): `SFO -> LHR` and `FCO -> SFO` on one transatlantic ticket.
-  - Intra-region Tickets: Separate one-way flights (or rail) `LON -> PAR` and `PAR -> ROM`.
-- **Strategy D — Split Long-Haul Hub (Self-Transfer & Nested Hub RT):**
-  - Example: Replacing an expensive `SFO -> BKK` leg with `SFO -> TPE` (Round-Trip) + `TPE -> BKK` (One-Way or regional Open-Jaw), enforcing that layover buffer at `TPE` $\ge$ minimum safe self-transfer threshold.
+  - Intra-region Tickets: Separate one-way flights `LHR -> CDG` and `CDG -> FCO`.
+- **Strategy D — Nested Tickets:**
+  - Pair the first and last legs on an outer round-trip or open-jaw ticket,
+    and group the inner legs on a separate one-way or multi-city ticket.
+- **Strategy E — Split the First Leg at a Hub:**
+  - Example: Replace `SFO -> BKK` with `SFO -> TPE` and `TPE -> BKK`.
+    A gateway open-jaw ticket can pair `SFO -> TPE` with a later return leg,
+    while a separate one-way ticket covers `TPE -> BKK`. The assumed buffer
+    does not establish that these flights connect.
 
 ### Stage 4: Multi-Objective Scoring & Pareto Frontier
 Each complete itinerary is evaluated on a generalized cost function and Pareto dominance:
-$$\text{Effective Score} = \text{Total Fare} + \text{Bag Fees} + (\alpha \times \text{Travel Hours}) + (\beta_{\text{prot}} \times N_{\text{prot}}) + (\beta_{\text{self}} \times N_{\text{self}})$$
+$$\text{Effective Score} = \text{Total Fare} + \text{Bag Fees} + (\alpha \times \text{Travel Hours}) + (\beta_{\text{prot}} \times N_{\text{prot}}) + (\beta_{\text{self}} \times N_{\text{self}}) + (\gamma \times \max(0, N_{\text{tickets}} - 1))$$
 1. **Total Monetary Cost ($):** Base fares + estimated baggage fees across all separate tickets.
-2. **Total Door-to-Door / Air Travel Time (hours):** Flight duration + layover time.
+2. **Flight and Connection Time (hours):** Flight duration + layovers and any
+   assumed self-transfer buffer, excluding city stays and ground travel.
 3. **Transfer Count & Risk Score:**
    - Protected airline connection ($\beta_{\text{prot}}$, low penalty).
    - Unprotected self-transfer on separate tickets ($\beta_{\text{self}}$, higher penalty; requires longer connection buffer and baggage re-check).
-4. **Pareto Frontier Output:**
+4. **Pareto Frontier Output:** Non-dominated itineraries among the evaluated candidates.
    - **Cheapest Overall**
    - **Fastest / Least Transfers**
    - **Best Balanced (Recommended "Sweet Spot")**

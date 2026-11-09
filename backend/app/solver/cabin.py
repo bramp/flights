@@ -1,4 +1,8 @@
-"""Per-leg and duration-based cabin class and transfer limit resolver."""
+"""Resolve per-leg cabin and connection preferences.
+
+Cabin and stop rules use estimated flight durations when a preference is
+automatic. Stop and layover limits can be relaxed when no option meets them.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +39,27 @@ def resolve_leg_cabin(
     requested_cabin: CabinClass,
     policy: CabinPolicy,
 ) -> ConcreteCabinClass:
-    """Resolve a leg's concrete cabin class using either its explicit override or the duration rule."""
+    """Resolve a leg's cabin from its preference and duration policy.
+
+    An explicit preference takes precedence. For ``AUTO``, use the long-haul
+    cabin when the estimated nonstop duration is at or above the policy
+    threshold; otherwise use the default cabin.
+
+    Args:
+        origin: Origin airport code used for duration estimation.
+        destination: Destination airport code used for duration estimation.
+        requested_cabin: Explicit cabin or ``AUTO``.
+        policy: Cabins and duration threshold for automatic selection.
+
+    Returns:
+        A concrete cabin class.
+
+    Examples:
+        >>> from backend.app.models.schemas import CabinClass, CabinPolicy
+        >>> from backend.app.solver.cabin import resolve_leg_cabin
+        >>> resolve_leg_cabin("SFO", "LHR", CabinClass.ECONOMY, CabinPolicy()).value
+        'economy'
+    """
     if requested_cabin != CabinClass.AUTO:
         return ConcreteCabinClass(requested_cabin.value)
 
@@ -46,13 +70,26 @@ def resolve_leg_cabin(
 
 
 def highest_cabin(cabins: list[ConcreteCabinClass]) -> ConcreteCabinClass:
-    """Return the highest cabin class among a set of legs (used when a single ticket must price uniformly)."""
+    """Return the highest cabin, or economy when the list is empty.
+
+    The order is economy, premium economy, business, then first. The solver
+    uses this ranking when requesting a uniform cabin for a single ticket.
+
+    Examples:
+        >>> from backend.app.models.schemas import ConcreteCabinClass
+        >>> from backend.app.solver.cabin import highest_cabin
+        >>> highest_cabin([ConcreteCabinClass.ECONOMY, ConcreteCabinClass.BUSINESS]).value
+        'business'
+        >>> highest_cabin([]).value
+        'economy'
+    """
     if not cabins:
         return ConcreteCabinClass.ECONOMY
     return max(cabins, key=lambda c: CABIN_RANK[c])
 
 
 def _stops_mode_to_limit(mode: ConcreteStopsMode) -> int | None:
+    """Convert a concrete stop preference to an inclusive limit."""
     if mode == ConcreteStopsMode.NONSTOP:
         return 0
     if mode == ConcreteStopsMode.ONE_STOP:
@@ -67,9 +104,33 @@ def resolve_leg_max_stops(
     policy: StopsPolicy,
     options: list[FlightLegOption] | None = None,
 ) -> int | None:
-    """Resolve a leg's maximum allowed stops using either its explicit override or the duration rule.
-    Uses actual flight durations from `options` when available (especially if airport coordinates are unknown).
-    Returns 0 for Nonstop, 1 for <=1 Stop, or None for Any stops.
+    """Resolve the preferred maximum number of stops for a leg.
+
+    An explicit preference takes precedence. For ``AUTO``, use the shortest
+    positive nonstop duration in the supplied options when available. If no
+    nonstop duration exists and either airport lacks coordinates, use the
+    shortest estimated airborne duration from the options, with a 0.5-hour
+    minimum. Otherwise, estimate the nonstop duration from airport data.
+    Durations below the policy threshold use the short-haul rule; durations
+    at the threshold use the long-haul rule.
+
+    Args:
+        origin: Origin airport code used for duration estimation.
+        destination: Destination airport code used for duration estimation.
+        requested_stops: Explicit stop preference or ``AUTO``.
+        policy: Stop limits and duration threshold for automatic selection.
+        options: Optional candidate legs used to improve the duration estimate.
+
+    Returns:
+        An inclusive maximum of zero or one stop, or ``None`` for no stop limit.
+
+    Examples:
+        >>> from backend.app.models.schemas import StopsMode, StopsPolicy
+        >>> from backend.app.solver.cabin import resolve_leg_max_stops
+        >>> resolve_leg_max_stops("SFO", "LHR", StopsMode.ONE_STOP, StopsPolicy())
+        1
+        >>> resolve_leg_max_stops("SFO", "LHR", StopsMode.ANY, StopsPolicy()) is None
+        True
     """
     if requested_stops != StopsMode.AUTO:
         return _stops_mode_to_limit(ConcreteStopsMode(requested_stops.value))
@@ -97,9 +158,38 @@ def filter_options_by_stops(
     max_stops: int | None,
     max_layover_hours: float | None = None,
 ) -> list[FlightLegOption]:
-    """Filter candidate flight options to those matching `max_stops` and `max_layover_hours` per stop,
-    gracefully falling back to the minimum stops / shortest layover available if no flight meets
-    the strict bound.
+    """Filter options by preferred stops and average layover per stop.
+
+    Apply the inclusive stop limit first. If nothing meets it, retain options
+    with the fewest available stops. Then apply the inclusive average layover
+    limit. If nothing meets that limit, retain options within half an hour of
+    the shortest available average. A missing or nonpositive layover limit
+    disables that filter. Individual connection durations are not checked.
+
+    Args:
+        options: Candidate legs in their preferred output order.
+        max_stops: Preferred inclusive stop limit, or ``None`` for any number.
+        max_layover_hours: Preferred maximum average layover hours per stop.
+
+    Returns:
+        Matching or relaxed candidates in their original order.
+
+    Examples:
+        This synthetic option shows how a nonstop preference can be relaxed:
+
+        >>> from datetime import date
+        >>> from backend.app.models.schemas import ConcreteCabinClass, FlightLegOption
+        >>> from backend.app.solver.cabin import filter_options_by_stops
+        >>> option = FlightLegOption(
+        ...     leg_id="one-stop", origin="SFO", destination="LHR",
+        ...     departure_date=date(2026, 11, 10), cabin=ConcreteCabinClass.ECONOMY,
+        ...     airline="XX", airline_name="Example Air", alliance="Non-Aligned",
+        ...     flight_numbers=[], segments=[], duration_hours=10, stops_count=1,
+        ...     layover_hours=2, one_way_base_fare_usd=500,
+        ...     round_trip_half_fare_usd=400, bag_fee_per_checked_bag_usd=0,
+        ... )
+        >>> filter_options_by_stops([option], max_stops=0)[0].stops_count
+        1
     """
     if not options:
         return options

@@ -40,6 +40,17 @@ uv run pytest
 npm run test:ux
 ```
 
+Pytest runs doctests in all Python modules under `backend/` and `tests/`. To run
+only the backend examples, use `uv run pytest --doctest-modules backend/`.
+During pytest doctests, a fixture blocks `socket.socket.connect`, `connect_ex`,
+`socket.getaddrinfo`, and fast-flights' live client. This protects those paths;
+it is not a general network sandbox. Use offline providers or mocked transports
+in examples. `FARESPLIT_TESTING=1` enables the simulator but does not block live
+providers. Ordinary tests are not subject to this fixture, and running
+`python -m doctest` directly does not activate it.
+Pytest can also supply setup through `getfixture("name")`, but examples that
+use it cannot run with Python's standalone doctest runner.
+
 The Playwright suite serves the real frontend on port **8765** and mocks every
 `/api/` request. It does not start the FastAPI backend, contact flight providers,
 or consume API quota. Keep port 8765 free when running it.
@@ -137,9 +148,9 @@ flights/
 │       │   └── replay_provider_recordings.py # Replay recorded responses without network access
 │       ├── solver/
 │       │   ├── cabin.py             # Per-leg and duration-threshold cabin class resolver
-│       │   ├── route_dag.py         # Date-window & flexible city-order schedule generator
-│       │   ├── hub_splitter.py      # Intermediate hub splitting & self-transfer buffer evaluator
-│       │   ├── partitioner.py       # Set partitioning (Single MC, Open-Jaw, Nested RT, One-Way, Hub Split)
+│       │   ├── route_dag.py         # Sampled city orders, stay profiles & date-window schedules
+│       │   ├── hub_splitter.py      # Heuristic hub splitting with an assumed transfer buffer
+│       │   ├── partitioner.py       # Five heuristic ticket-partition strategies
 │       │   ├── pareto.py            # Generalized cost scoring & Pareto dominance frontier
 │       │   └── optimizer.py         # End-to-end orchestrator
 │       └── static/

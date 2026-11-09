@@ -1,12 +1,9 @@
-"""Intermediate hub splitter & virtual interlining evaluator.
+"""Evaluate heuristic hub splits of the first planned flight leg.
 
-Tests splitting long-haul legs at major intermediate gateway hubs (e.g., TPE, ICN, HND,
-LHR, DUB, IST, SIN, DOH) either as:
-  1. Gateway Open-Jaw + Spoke Continuation (`Origin -> Hub` + `LastStop -> Origin` on Ticket 1,
-     `Hub -> FirstStop` on Ticket 2)
-  2. Pure Hub Round-Trip Anchor (`Origin <-> Hub` Round-Trip on Ticket 1, with regional flights
-     `Hub -> Stop 1 -> ... -> LastStop -> Hub` nested inside).
-Enforces minimum self-transfer connection buffers (4.0h carry-on only, 5.5h with checked bags).
+The strategy proposes a gateway open-jaw ticket, a separate hub continuation,
+and any middle one-way tickets. It adds an assumed self-transfer buffer to
+the score, but does not check the actual arrival and departure times at the
+hub. Travelers must verify that the connection is feasible.
 """
 
 from __future__ import annotations
@@ -35,7 +32,27 @@ from backend.app.solver.route_dag import CandidateSchedule, PlannedLegSpec
 
 
 def required_self_transfer_buffer_hours(request: TripRequest) -> float:
-    """Return mandatory connection buffer (hours) for an unprotected self-transfer at a hub."""
+    """Return the assumed self-transfer buffer in hours.
+
+    Use 5.5 hours when the request includes checked baggage and 4.0 hours
+    otherwise. This value is an allowance for scoring and guidance; it does
+    not verify an actual connection.
+
+    Examples:
+        >>> from datetime import date
+        >>> from backend.app.models.schemas import CityStopSpec, TripRequest
+        >>> from backend.app.solver.hub_splitter import required_self_transfer_buffer_hours
+        >>> trip = TripRequest(
+        ...     origin_airports=["SFO"], destination_airports=["SFO"],
+        ...     earliest_departure=date(2026, 11, 10), latest_return=date(2026, 11, 15),
+        ...     stops=[CityStopSpec(id="lon", label="London", airports=["LHR"])],
+        ... )
+        >>> required_self_transfer_buffer_hours(trip)
+        4.0
+        >>> trip.baggage.checked_bags = 1
+        >>> required_self_transfer_buffer_hours(trip)
+        5.5
+    """
     return 5.5 if request.baggage.checked_bags > 0 else 4.0
 
 
@@ -45,9 +62,10 @@ def _discover_corridor_hubs(
     first_leg_options: list[FlightLegOption],
     max_hubs: int = 2,
 ) -> list[str]:
-    """Discover candidate intermediate gateway hubs dynamically from the actual layover airports
-    observed in Google Flights results for `orig_code -> first_dest_code`, falling back to
-    great-circle corridor hubs only if needed.
+    """Select hubs from observed layovers, then geographic corridor candidates.
+
+    Rank observed hubs by descending frequency and then airport code. Exclude
+    the endpoints and fill remaining slots with geographic candidates.
     """
     hub_counts: dict[str, int] = {}
     for opt in first_leg_options:
@@ -73,7 +91,33 @@ def evaluate_hub_split_candidates(
     fetch_pair_options: Callable[[PlannedLegSpec, TripRequest, FlightSearchProvider], list[FlightLegOption]],
     assemble_itinerary: Callable[..., EvaluatedItinerary],
 ) -> EvaluatedItinerary | None:
-    """Evaluate intermediate hub-splitting strategies for the given schedule."""
+    """Evaluate up to two hub splits for the first leg of a schedule.
+
+    Skip this strategy when disabled, when the schedule has fewer than two
+    legs, or when the first leg requires nonstop travel. A one-stop limit
+    requires both split sub-legs to be nonstop. Select individual legs using
+    the supplied cost function and return the lowest-scoring assembled
+    candidate; this is not an exhaustive combination search.
+
+    The selected sub-legs use the first leg's planned departure date. The
+    assumed 4.0- or 5.5-hour buffer is added to the itinerary, but the
+    selected flights' actual connection times are not checked. The gateway
+    fare also includes a 6% discount assumption.
+
+    Args:
+        schedule: Candidate schedule whose first leg may be split.
+        request: Trip preferences, baggage, and scoring weights.
+        provider: Search provider; live searches must use a cache wrapper.
+        compute_baggage_fee: Estimate the baggage fee for a leg and request.
+        leg_generalized_cost: Rank a leg using one-way or half-round-trip fare.
+        fetch_pair_options: Retrieve and filter options for a planned leg.
+        assemble_itinerary: Build the evaluated itinerary from selected legs
+            and proposed tickets.
+
+    Returns:
+        The best evaluated hub-split proposal, or ``None`` if none is found.
+        Its ticket fares and connection feasibility are not verified.
+    """
     if not request.weights.enable_hub_splitting or len(schedule.legs) < 2:
         return None
 

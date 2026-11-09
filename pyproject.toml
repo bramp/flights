@@ -25,7 +25,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+addopts = ["--doctest-modules"]
+testpaths = ["tests", "backend"]
 pythonpath = ["."]
 
 [tool.ruff]

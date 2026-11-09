@@ -1,4 +1,4 @@
-"""End-to-end multi-city optimization orchestrator and Pareto frontier extractor."""
+"""Orchestrate sampled schedules, cached flight searches, and itinerary ranking."""
 
 from __future__ import annotations
 
@@ -42,9 +42,12 @@ def _collect_planned_queries(
     schedules: list[CandidateSchedule],
     request: TripRequest,
 ) -> set[LegSearch]:
-    """Pre-compute the distinct flight leg queries planned across all candidate schedules.
-    Dynamic hub-split sub-queries are registered on-the-fly by `CachedFlightProvider.search`
-    as corridor hubs are discovered from actual flight layovers.
+    """Collect distinct planned leg queries for progress reporting.
+
+    Include both each leg's resolved cabin and the schedule's highest cabin,
+    since different strategies can request either. Skip empty airport choices
+    and single-airport searches with identical endpoints. Hub-split searches
+    are discovered later and registered by the cache wrapper.
     """
     queries: set[LegSearch] = set()
     for sched in schedules:
@@ -80,7 +83,62 @@ def optimize_trip(
     cache: FlightCache,
     progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResponse:
-    """Run schedule DAG generation, cached flight search, ticket partitioning, and Pareto ranking."""
+    """Compare sampled schedules and return ranked itinerary proposals.
+
+    Configure a composite provider for the request, reset cache session
+    counters, and route flight searches through ``CachedFlightProvider``.
+    Evaluate up to four schedules in explicit fast-flights or SerpApi mode
+    and up to eight in the other modes. Compare five heuristic ticket
+    strategies, select the lowest effective score, and return up to eight
+    non-dominated results. Fare estimates and the selected candidates are not
+    proof of a globally optimal or bookable trip.
+
+    Schedule windows and stop preferences can be relaxed. Hub-split results
+    include an assumed transfer buffer without checking actual connection
+    times. Warnings include search issues and relevant relaxed constraints.
+
+    Args:
+        request: Trip constraints, provider mode, and scoring preferences.
+        raw_provider: Underlying flight search provider.
+        cache: SQLite cache used for live search results and usage counters.
+        progress_callback: Optional callback receiving synchronous progress
+            events. Exceptions from the callback propagate.
+
+    Returns:
+        The recommended itinerary, Pareto frontier, best result per available
+        strategy, counts, cache statistics, and warnings.
+
+    Raises:
+        ValueError: If no itinerary can be evaluated, or if a composite
+            provider is configured for offline mode without testing enabled.
+
+    Examples:
+        Run a test-only simulation with a temporary cache and no live requests:
+
+        >>> import os
+        >>> from datetime import date
+        >>> from pathlib import Path
+        >>> from tempfile import TemporaryDirectory
+        >>> from unittest.mock import patch
+        >>> from backend.app.cache.sqlite_cache import FlightCache
+        >>> from backend.app.models.schemas import CityStopSpec, OptimizationWeights, ProviderMode, TripRequest
+        >>> from backend.app.providers.google_flights import CompositeFlightProvider
+        >>> from backend.app.solver.optimizer import optimize_trip
+        >>> trip = TripRequest(
+        ...     origin_airports=["SFO"], destination_airports=["SFO"],
+        ...     earliest_departure=date(2026, 11, 10), latest_return=date(2026, 11, 16),
+        ...     stops=[CityStopSpec(id="lon", label="London", airports=["LHR"], min_nights=2, max_nights=2)],
+        ...     provider_mode=ProviderMode.OFFLINE,
+        ...     weights=OptimizationWeights(enable_hub_splitting=False),
+        ... )
+        >>> with TemporaryDirectory() as directory:
+        ...     with patch.dict(os.environ, {"FARESPLIT_TESTING": "1"}):
+        ...         response = optimize_trip(
+        ...             trip, CompositeFlightProvider(rate_limit_seconds=0), FlightCache(Path(directory) / "cache.db")
+        ...         )
+        ...         response.recommended.legs[0].provider
+        'pricing_engine'
+    """
     cache.reset_session_counters()
     if isinstance(raw_provider, CompositeFlightProvider):
         raw_provider.configure_for_run(
